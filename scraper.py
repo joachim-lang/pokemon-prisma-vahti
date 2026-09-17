@@ -462,7 +462,7 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
 
     if announce and not state.get("announced"):
         notify_text(
-            "Pokemon-seuranta käynnissä. Tarkistan Prisma.fi-sivua 15 min välein "
+            "Pokemon-seuranta käynnissä. Tarkistan Prisma.fi-sivua 5 min välein "
             f"({snapshot['brand_product_count']} tuotetta nyt, "
             f"{len(snapshot['matches'])} osumaa 30th Celebrationille)."
         )
@@ -635,7 +635,7 @@ def main() -> int:
         print("Testiviesti lähetetty Telegramiin.")
         return 0
 
-    interval = args.interval or int(os.environ.get("CHECK_INTERVAL_MINUTES") or 15)
+    interval = args.interval or int(os.environ.get("CHECK_INTERVAL_MINUTES") or 5)
     if args.watch:
         log(f"Aloitetaan seuranta, väli {interval} min")
         while True:
