@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seuraa Prisma.fi Pokemon-sivua ja ilmoittaa Slackiin tai Telegramiin 30th Celebration -korteista."""
+"""Seuraa Prisman ja Kärkkäisen Pokemon-kortteja ja ilmoittaa 30th Celebration -osumista."""
 
 from __future__ import annotations
 
@@ -33,6 +33,17 @@ SEARCH_URLS = (
     "https://www.prisma.fi/haku?search=pokemon+juhlavuosi",
 )
 PRODUCT_URL = "https://www.prisma.fi/tuote/{slug}"
+KARKKAINEN_LISTING_URL = (
+    "https://www.karkkainen.com/verkkokauppa/kerailykortit"
+    "?offset={offset}&facet=attributes.Tuotemerkki%3APokemon"
+)
+KARKKAINEN_SEARCH_URLS = (
+    "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+30th+celebration",
+    "https://www.karkkainen.com/verkkokauppa/search?searchTerm=30th+celebration",
+    "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+30-vuotis",
+    "https://www.karkkainen.com/verkkokauppa/search?searchTerm=30-vuotisjuhla",
+)
+KARKKAINEN_BASE = "https://www.karkkainen.com/verkkokauppa"
 MAX_PAGES = 8
 REQUEST_PAUSE_SECONDS = 1.5
 
@@ -51,8 +62,15 @@ MATCH_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 MEASUREMENT_30_RE = re.compile(
-    r"(?<!\d)30(?:[.,]\d+)?\s*(?:cm|mm|cl|ml|g|kg|kpl)\b",
-    re.IGNORECASE,
+    r"""
+    (?<!\d)30(?:[.,]\d+)?
+    (?:
+        \s*[x×]\s*\d+(?:[.,]\d+)?(?:\s*(?:cm|mm))?
+        |
+        \s*(?:cm|mm|cl|ml|g|kg|kpl)\b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 # Sivun markkinointibanneri, ei myynnissä oleva tuote.
 IGNORED_MARKETING_RE = re.compile(
@@ -183,6 +201,7 @@ def normalize_product(raw: dict[str, Any], ribbons: dict[str, Any], source: str)
         "price": cents_to_euros(raw.get("finalPrice") if raw.get("finalPrice") is not None else raw.get("price")),
         "image": raw.get("mainImage"),
         "source": source,
+        "store": "Prisma",
         "availability": availability,
         "available": is_available(availability),
     }
@@ -232,20 +251,161 @@ def fetch_search_products() -> list[dict[str, Any]]:
     return list(collected.values())
 
 
-def collect_matches() -> dict[str, Any]:
-    brand_products, total = fetch_brand_products()
-    matches = {
-        product["id"]: product
-        for product in brand_products
-        if is_anniversary_product(product["name"])
+def parse_karkkainen_listing(html: str) -> dict[str, Any]:
+    match = NEXT_DATA_RE.search(html)
+    if not match:
+        raise RuntimeError("Kärkkäisen sivulta ei löytynyt tuotetietoja (__NEXT_DATA__).")
+    fallback = json.loads(match.group(1)).get("props", {}).get("pageProps", {}).get("fallback") or {}
+    listings = [
+        value
+        for value in fallback.values()
+        if isinstance(value, dict) and isinstance(value.get("contents"), list) and "total" in value
+    ]
+    if not listings:
+        raise RuntimeError("Kärkkäisen tuotelistaa ei löytynyt.")
+    return max(listings, key=lambda item: len(item.get("contents") or []))
+
+
+def karkkainen_price(raw: dict[str, Any]) -> str | None:
+    prices = raw.get("price") or []
+    for usage in ("Display", "Offer"):
+        for item in prices:
+            if item.get("usage") == usage and item.get("value") is not None:
+                try:
+                    return f"{float(item['value']):.2f} €"
+                except (TypeError, ValueError):
+                    continue
+    return None
+
+
+def karkkainen_url(raw: dict[str, Any]) -> str:
+    href = str((raw.get("seo") or {}).get("href") or "").strip()
+    if href.startswith("http"):
+        return href
+    if href.startswith("/verkkokauppa"):
+        return "https://www.karkkainen.com" + href
+    if href.startswith("/"):
+        return KARKKAINEN_BASE + href
+    return KARKKAINEN_LISTING_URL.format(offset=0)
+
+
+def normalize_karkkainen_product(raw: dict[str, Any], source: str) -> dict[str, Any]:
+    product_id = str(raw.get("partNumber") or raw.get("id") or "").strip()
+    buyable = str(raw.get("buyable") or "").lower() == "true"
+    availability = {"ecom": buyable, "click_and_collect": False, "store": False}
+    image = raw.get("thumbnail")
+    if isinstance(image, str):
+        image = image.replace("h_80", "h_234").replace("w_80", "w_234")
+    return {
+        "id": f"karkkainen:{product_id}" if product_id else "",
+        "name": str(raw.get("name") or "").strip(),
+        "slug": str((raw.get("seo") or {}).get("href") or "").strip(),
+        "brand": str(raw.get("manufacturer") or "").strip(),
+        "url": karkkainen_url(raw),
+        "price": karkkainen_price(raw),
+        "image": image,
+        "source": source,
+        "store": "Kärkkäinen",
+        "availability": availability,
+        "available": buyable,
     }
-    for product in fetch_search_products():
-        matches.setdefault(product["id"], product)
+
+
+def fetch_karkkainen_products() -> tuple[list[dict[str, Any]], int]:
+    collected: dict[str, dict[str, Any]] = {}
+    total = 0
+    offset = 0
+    page = 1
+    while page <= MAX_PAGES:
+        listing = parse_karkkainen_listing(fetch_html(KARKKAINEN_LISTING_URL.format(offset=offset)))
+        total = int(listing.get("total") or 0)
+        batch = listing.get("contents") or []
+        if not batch:
+            break
+        for raw in batch:
+            if not isinstance(raw, dict):
+                continue
+            product = normalize_karkkainen_product(raw, "karkkainen")
+            if product["id"]:
+                collected[product["id"]] = product
+        if len(collected) >= total:
+            break
+        offset += max(len(batch), 1)
+        page += 1
+        time.sleep(REQUEST_PAUSE_SECONDS)
+    return list(collected.values()), total
+
+
+def fetch_karkkainen_search() -> list[dict[str, Any]]:
+    collected: dict[str, dict[str, Any]] = {}
+    for url in KARKKAINEN_SEARCH_URLS:
+        listing = parse_karkkainen_listing(fetch_html(url))
+        for raw in listing.get("contents") or []:
+            if not isinstance(raw, dict):
+                continue
+            product = normalize_karkkainen_product(raw, "karkkainen-search")
+            if product["id"] and is_anniversary_product(
+                product["name"], product.get("brand", ""), require_pokemon=True
+            ):
+                collected[product["id"]] = product
+        time.sleep(REQUEST_PAUSE_SECONDS)
+    return list(collected.values())
+
+
+def collect_store_matches(fetcher, label: str) -> tuple[list[dict[str, Any]], list[str]]:
+    try:
+        return fetcher(), []
+    except Exception as error:  # noqa: BLE001
+        message = f"{label}: {error}"
+        log(f"VIRHE {message}")
+        return [], [message]
+
+
+def collect_matches() -> dict[str, Any]:
+    errors: list[str] = []
+    matches: dict[str, dict[str, Any]] = {}
+
+    def add_matches(products: list[dict[str, Any]], require_pokemon: bool = False) -> None:
+        for product in products:
+            if product.get("id") and is_anniversary_product(
+                product["name"], product.get("brand", ""), require_pokemon=require_pokemon
+            ):
+                matches.setdefault(product["id"], product)
+
+    prisma_result, prisma_errors = collect_store_matches(
+        lambda: (fetch_brand_products(), fetch_search_products()),
+        "Prisma",
+    )
+    karkkainen_result, karkkainen_errors = collect_store_matches(
+        lambda: (fetch_karkkainen_products(), fetch_karkkainen_search()),
+        "Kärkkäinen",
+    )
+    errors.extend(prisma_errors)
+    errors.extend(karkkainen_errors)
+
+    prisma_products, prisma_total, prisma_search = [], 0, []
+    if prisma_result:
+        (prisma_products, prisma_total), prisma_search = prisma_result
+        add_matches(prisma_products)
+        add_matches(prisma_search, require_pokemon=True)
+
+    karkkainen_products, karkkainen_total, karkkainen_search = [], 0, []
+    if karkkainen_result:
+        (karkkainen_products, karkkainen_total), karkkainen_search = karkkainen_result
+        add_matches(karkkainen_products)
+        add_matches(karkkainen_search, require_pokemon=True)
+
+    if errors and not prisma_products and not karkkainen_products:
+        raise RuntimeError(" | ".join(errors))
+
     return {
         "checked_at": now_iso(),
-        "brand_product_count": len(brand_products),
-        "brand_total_count": total,
+        "brand_product_count": len(prisma_products),
+        "brand_total_count": prisma_total,
+        "karkkainen_product_count": len(karkkainen_products),
+        "karkkainen_total_count": karkkainen_total,
         "matches": list(matches.values()),
+        "errors": errors,
     }
 
 
@@ -344,7 +504,7 @@ def product_lines(product: dict[str, Any]) -> list[str]:
     price = product.get("price") or "hinta ei tiedossa"
     return [
         f"*<{product['url']}|{product['name']}>*",
-        f"{price} · {availability_label(product['availability'])}",
+        f"{price} · {availability_label(product['availability'])} · {product.get('store') or 'Prisma'}",
     ]
 
 
@@ -355,9 +515,13 @@ def telegram_product_message(title: str, products: list[dict[str, Any]]) -> str:
         price = html_escape(product.get("price") or "hinta ei tiedossa")
         avail = html_escape(availability_label(product["availability"]))
         lines.append(f'<a href="{product["url"]}">{name}</a>')
-        lines.append(f"{price} · {avail}")
+        store = html_escape(product.get("store") or "Prisma")
+        lines.append(f"{price} · {avail} · {store}")
         lines.append("")
-    lines.append(f'<a href="{BRAND_URL}">Avaa Pokemon-sivu</a>')
+    lines.append(
+        f'<a href="{BRAND_URL}">Prisma</a> · '
+        f'<a href="{KARKKAINEN_LISTING_URL.format(offset=0)}">Kärkkäinen</a>'
+    )
     return "\n".join(lines).strip()
 
 
@@ -391,7 +555,7 @@ def notify_products(title: str, fallback: str, products: list[dict[str, Any]]) -
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"Löytyi *{len(products)}* tuote(tta) Prisma.fi Pokemon-valikoimasta.",
+                "text": f"Löytyi *{len(products)}* tuote(tta) Prismasta / Kärkkäiseltä.",
             },
         },
     ]
@@ -410,7 +574,15 @@ def notify_products(title: str, fallback: str, products: list[dict[str, Any]]) -
     blocks.append(
         {
             "type": "context",
-            "elements": [{"type": "mrkdwn", "text": f"<{BRAND_URL}|Avaa Pokemon-sivu>"}],
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"<{BRAND_URL}|Prisma> · "
+                        f"<{KARKKAINEN_LISTING_URL.format(offset=0)}|Kärkkäinen>"
+                    ),
+                }
+            ],
         }
     )
     send_to_channels(
@@ -462,8 +634,9 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
 
     if announce and not state.get("announced"):
         notify_text(
-            "Pokemon-seuranta käynnissä. Tarkistan Prisma.fi-sivua 5 min välein "
-            f"({snapshot['brand_product_count']} tuotetta nyt, "
+            "Pokemon-seuranta käynnissä. Tarkistan Prismaa ja Kärkkäistä 5 min välein "
+            f"(Prisma {snapshot['brand_product_count']}, "
+            f"Kärkkäinen {snapshot.get('karkkainen_product_count', 0)}, "
             f"{len(snapshot['matches'])} osumaa 30th Celebrationille)."
         )
         state["announced"] = True
@@ -471,14 +644,14 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
     if newly_available:
         notify_products(
             "Pokémon 30th Celebration on myynnissä!",
-            "Pokémon 30th Celebration -kortit ovat nyt myynnissä Prismassa.",
+            "Pokémon 30th Celebration -kortit ovat nyt myynnissä.",
             newly_available,
         )
         log(f"Hälytys: {len(newly_available)} tuotetta myynnissä")
     if newly_listed and not newly_available:
         notify_products(
-            "Pokémon 30th Celebration listattiin Prismaan",
-            "Pokémon 30th Celebration -tuotteita ilmestyi Prisma.fi-sivulle.",
+            "Pokémon 30th Celebration listattiin",
+            "Pokémon 30th Celebration -tuotteita ilmestyi myyntiin.",
             newly_listed,
         )
         log(f"Hälytys: {len(newly_listed)} uutta listattua tuotetta")
@@ -488,7 +661,7 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
         if leftover:
             notify_products(
                 "Lisää 30th Celebration -tuotteita listattiin",
-                "Uusia Pokémon 30th Celebration -tuotteita ilmestyi Prismaan.",
+                "Uusia Pokémon 30th Celebration -tuotteita ilmestyi myyntiin.",
                 leftover,
             )
 
@@ -504,7 +677,7 @@ def handle_error(error: Exception, dry_run: bool) -> None:
     state["consecutive_errors"] = int(state.get("consecutive_errors") or 0) + 1
     if state["consecutive_errors"] >= 3 and not state.get("error_alerted") and has_notifier():
         try:
-            notify_text(f"Pokemon-seuranta ei saanut luettua Prismaa: {error}")
+            notify_text(f"Pokemon-seuranta ei saanut luettua kauppoja: {error}")
             state["error_alerted"] = True
         except Exception as slack_error:  # noqa: BLE001
             log(f"Slack-virheilmoitus epäonnistui: {slack_error}")
@@ -519,11 +692,16 @@ def run_once(announce: bool, dry_run: bool) -> int:
         return 1
 
     log(
-        f"Tarkistus ok: {snapshot['brand_product_count']}/{snapshot['brand_total_count']} "
-        f"tuotetta, {len(snapshot['matches'])} 30th-osumaa"
+        f"Tarkistus ok: Prisma {snapshot['brand_product_count']}/{snapshot['brand_total_count']}, "
+        f"Kärkkäinen {snapshot.get('karkkainen_product_count', 0)}/"
+        f"{snapshot.get('karkkainen_total_count', 0)}, "
+        f"{len(snapshot['matches'])} 30th-osumaa"
     )
     for product in snapshot["matches"]:
-        log(f"  - {product['name']} ({availability_label(product['availability'])}) {product['url']}")
+        log(
+            f"  - [{product.get('store') or '?'}] {product['name']} "
+            f"({availability_label(product['availability'])}) {product['url']}"
+        )
 
     if not has_notifier() and not dry_run:
         log("Ei Slack- tai Telegram-asetuksia — tulokset vain lokiin.")
@@ -551,6 +729,7 @@ def self_test() -> int:
         "Pokemon juhlavuosi collection",
         "Pokémon TCG 30 Booster Bundle",
         "Pokemon 30",
+        "Pokemon 30th Celebration Elite Trainer Box keräilykortit",
     ]
     should_not_match = [
         "Pokemon Pehmo 30 cm Pikachu",
@@ -561,6 +740,8 @@ def self_test() -> int:
         "Pokémon TCG Collector's Chest 2026",
         "Pokémonin 30-vuotisjuhlat ovat käynnissä – tästä juhlavuoden uutuuskortit!",
         "Lasten Pokemon bokserit 2-pack HY30034",
+        "Today 30x40cm juliste",
+        "Nina kulta MDF 30x30 pleksikehys",
     ]
     failed = False
     for name in should_match:
@@ -577,6 +758,14 @@ def self_test() -> int:
     if is_anniversary_product("Decorata Party Happy Celebration banneri", require_pokemon=True):
         print("FAIL: juhlakoriste ei saisi täsmätä haussa")
         failed = True
+    for name in (
+        "Happy Birthday 30 valkoinen lautasliina",
+        "30 Happy Birthday 6 kpl ilmapallo",
+        "Today 30x40cm juliste",
+    ):
+        if is_anniversary_product(name, require_pokemon=True):
+            print(f"FAIL: hakukohina ei saisi täsmätä: {name}")
+            failed = True
     if failed:
         return 1
     print("Self-test ok")
@@ -584,7 +773,7 @@ def self_test() -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prisma Pokemon 30th Celebration -vahti")
+    parser = argparse.ArgumentParser(description="Prisma ja Kärkkäinen Pokemon 30th Celebration -vahti")
     parser.add_argument("--once", action="store_true", help="Aja yksi tarkistus ja lopeta (oletus)")
     parser.add_argument("--watch", action="store_true", help="Tarkista toistuvasti")
     parser.add_argument("--interval", type=int, default=0, help="Tarkistusväli minuuteissa (--watch)")
