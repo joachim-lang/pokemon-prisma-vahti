@@ -13,6 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,25 @@ KARKKAINEN_SEARCH_URLS = (
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=30-vuotisjuhla",
 )
 KARKKAINEN_BASE = "https://www.karkkainen.com/verkkokauppa"
+KONSOLINET_WATCH = (
+    {
+        "id": "konsolinet:39310",
+        "url": "https://www.konsolinet.fi/product/39310/pokmon-tcg-30th-celebration-booster-bundle",
+        "name": "Pokémon TCG: 30th Celebration Booster Bundle",
+    },
+)
+KONSOLINET_GONE_RE = re.compile(
+    r"Poistunut myynnist(?:ä|&auml;) toistaiseksi",
+    re.IGNORECASE,
+)
+KONSOLINET_ADD_TO_CART_RE = re.compile(
+    r'<button[^>]*class="[^"]*AddToCart[^"]*"[^>]*>\s*<span>\s*Lisää ostoskoriin',
+    re.IGNORECASE,
+)
+KONSOLINET_PRICE_RE = re.compile(
+    r'<dd class="Price[^"]*">\s*([0-9]+,[0-9]+)\s*(?:&nbsp;|\s)*€',
+    re.IGNORECASE,
+)
 MAX_PAGES = 8
 REQUEST_PAUSE_SECONDS = 1.5
 
@@ -352,6 +372,41 @@ def fetch_karkkainen_search() -> list[dict[str, Any]]:
     return list(collected.values())
 
 
+def parse_konsolinet_product(html: str, watched: dict[str, str]) -> dict[str, Any]:
+    html_text = unescape(html)
+    gone = bool(KONSOLINET_GONE_RE.search(html_text) or "AvailabilityOutOfStock" in html)
+    has_cart = bool(KONSOLINET_ADD_TO_CART_RE.search(html_text))
+    available = has_cart and not gone
+    price_match = KONSOLINET_PRICE_RE.search(html_text)
+    image_match = re.search(r'property="og:image" content="([^"]+)"', html)
+    title_match = re.search(r'<h1 class="Title">(.*?)</h1>', html, re.DOTALL)
+    name = watched["name"]
+    if title_match:
+        name = unescape(re.sub(r"<[^>]+>", "", title_match.group(1))).strip() or name
+    return {
+        "id": watched["id"],
+        "name": name,
+        "slug": watched["url"],
+        "brand": "Pokemon",
+        "url": watched["url"],
+        "price": f"{price_match.group(1).replace(',', '.')} €" if price_match else None,
+        "image": image_match.group(1) if image_match else None,
+        "source": "konsolinet",
+        "store": "Konsolinet",
+        "availability": {"ecom": available, "click_and_collect": False, "store": False},
+        "available": available,
+        "notify_listed": False,
+    }
+
+
+def fetch_konsolinet_products() -> list[dict[str, Any]]:
+    products = []
+    for watched in KONSOLINET_WATCH:
+        products.append(parse_konsolinet_product(fetch_html(watched["url"]), watched))
+        time.sleep(REQUEST_PAUSE_SECONDS)
+    return products
+
+
 def collect_store_matches(fetcher, label: str) -> tuple[list[dict[str, Any]], list[str]]:
     try:
         return fetcher(), []
@@ -380,8 +435,10 @@ def collect_matches() -> dict[str, Any]:
         lambda: (fetch_karkkainen_products(), fetch_karkkainen_search()),
         "Kärkkäinen",
     )
+    konsolinet_result, konsolinet_errors = collect_store_matches(fetch_konsolinet_products, "Konsolinet")
     errors.extend(prisma_errors)
     errors.extend(karkkainen_errors)
+    errors.extend(konsolinet_errors)
 
     prisma_products, prisma_total, prisma_search = [], 0, []
     if prisma_result:
@@ -395,7 +452,12 @@ def collect_matches() -> dict[str, Any]:
         add_matches(karkkainen_products)
         add_matches(karkkainen_search, require_pokemon=True)
 
-    if errors and not prisma_products and not karkkainen_products:
+    konsolinet_products = konsolinet_result or []
+    for product in konsolinet_products:
+        if product.get("id"):
+            matches[product["id"]] = product
+
+    if errors and not prisma_products and not karkkainen_products and not konsolinet_products:
         raise RuntimeError(" | ".join(errors))
 
     return {
@@ -404,6 +466,7 @@ def collect_matches() -> dict[str, Any]:
         "brand_total_count": prisma_total,
         "karkkainen_product_count": len(karkkainen_products),
         "karkkainen_total_count": karkkainen_total,
+        "konsolinet_count": len(konsolinet_products),
         "matches": list(matches.values()),
         "errors": errors,
     }
@@ -520,7 +583,8 @@ def telegram_product_message(title: str, products: list[dict[str, Any]]) -> str:
         lines.append("")
     lines.append(
         f'<a href="{BRAND_URL}">Prisma</a> · '
-        f'<a href="{KARKKAINEN_LISTING_URL.format(offset=0)}">Kärkkäinen</a>'
+        f'<a href="{KARKKAINEN_LISTING_URL.format(offset=0)}">Kärkkäinen</a> · '
+        f'<a href="{KONSOLINET_WATCH[0]["url"]}">Konsolinet</a>'
     )
     return "\n".join(lines).strip()
 
@@ -555,7 +619,7 @@ def notify_products(title: str, fallback: str, products: list[dict[str, Any]]) -
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"Löytyi *{len(products)}* tuote(tta) Prismasta / Kärkkäiseltä.",
+                "text": f"Löytyi *{len(products)}* tuote(tta) Prismasta / Kärkkäiseltä / Konsolinetistä.",
             },
         },
     ]
@@ -579,7 +643,8 @@ def notify_products(title: str, fallback: str, products: list[dict[str, Any]]) -
                     "type": "mrkdwn",
                     "text": (
                         f"<{BRAND_URL}|Prisma> · "
-                        f"<{KARKKAINEN_LISTING_URL.format(offset=0)}|Kärkkäinen>"
+                        f"<{KARKKAINEN_LISTING_URL.format(offset=0)}|Kärkkäinen> · "
+                        f"<https://www.konsolinet.fi/product/39310/pokmon-tcg-30th-celebration-booster-bundle|Konsolinet>"
                     ),
                 }
             ],
@@ -614,7 +679,8 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
             "alerted_available": bool(previous.get("alerted_available")),
         }
         if not record["alerted_listed"]:
-            newly_listed.append(product)
+            if product.get("notify_listed", True):
+                newly_listed.append(product)
             record["alerted_listed"] = True
         if product["available"] and not record["alerted_available"]:
             newly_available.append(product)
@@ -695,6 +761,7 @@ def run_once(announce: bool, dry_run: bool) -> int:
         f"Tarkistus ok: Prisma {snapshot['brand_product_count']}/{snapshot['brand_total_count']}, "
         f"Kärkkäinen {snapshot.get('karkkainen_product_count', 0)}/"
         f"{snapshot.get('karkkainen_total_count', 0)}, "
+        f"Konsolinet {snapshot.get('konsolinet_count', 0)}, "
         f"{len(snapshot['matches'])} 30th-osumaa"
     )
     for product in snapshot["matches"]:
@@ -755,6 +822,15 @@ def self_test() -> int:
     if not is_anniversary_product("30th Celebration Elite Trainer Box", "Pokemon", require_pokemon=True):
         print("FAIL: brand+30th Celebration olisi pitänyt täsmätä haussa")
         failed = True
+    gone_html = '<span class="ProductBadge ProductOutOfStockBadge">Poistunut myynnistä toistaiseksi</span><article class="Unavailable AvailabilityOutOfStock">'
+    live_html = '<button type="submit" class="SubmitButton AddToCart"><span>Lisää ostoskoriin</span></button>'
+    watched = KONSOLINET_WATCH[0]
+    if parse_konsolinet_product(gone_html, watched)["available"]:
+        print("FAIL: Konsolinet poistunut myynnistä ei saa olla saatavilla")
+        failed = True
+    if not parse_konsolinet_product(live_html, watched)["available"]:
+        print("FAIL: Konsolinet Lisää ostoskoriin olisi pitänyt olla saatavilla")
+        failed = True
     if is_anniversary_product("Decorata Party Happy Celebration banneri", require_pokemon=True):
         print("FAIL: juhlakoriste ei saisi täsmätä haussa")
         failed = True
@@ -773,7 +849,7 @@ def self_test() -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prisma ja Kärkkäinen Pokemon 30th Celebration -vahti")
+    parser = argparse.ArgumentParser(description="Prisma, Kärkkäinen ja Konsolinet Pokemon 30th vahti")
     parser.add_argument("--once", action="store_true", help="Aja yksi tarkistus ja lopeta (oletus)")
     parser.add_argument("--watch", action="store_true", help="Tarkista toistuvasti")
     parser.add_argument("--interval", type=int, default=0, help="Tarkistusväli minuuteissa (--watch)")
