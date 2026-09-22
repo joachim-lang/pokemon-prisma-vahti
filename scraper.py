@@ -33,7 +33,7 @@ SEARCH_URLS = (
     "https://www.prisma.fi/haku?search=pokemon+30-vuotis",
     "https://www.prisma.fi/haku?search=pokemon+juhlavuosi",
 )
-PRODUCT_URL = "https://www.prisma.fi/tuote/{slug}"
+PRODUCT_URL = "https://www.prisma.fi/tuotteet/{sok_id}/{slug}"
 KARKKAINEN_LISTING_URL = (
     "https://www.karkkainen.com/verkkokauppa/kerailykortit"
     "?offset={offset}&facet=attributes.Tuotemerkki%3APokemon"
@@ -183,7 +183,12 @@ def availability_from_ribbon(ribbon: dict[str, Any] | None) -> dict[str, bool]:
 
 
 def is_available(availability: dict[str, bool]) -> bool:
-    return any(availability.values())
+    return is_purchasable(availability)
+
+
+def is_purchasable(availability: dict[str, bool]) -> bool:
+    """Prisma: faded #b7d4c2 vs active #037842. Myymälälippu ei riitä."""
+    return bool(availability.get("ecom") or availability.get("click_and_collect"))
 
 
 def looks_like_pokemon_product(name: str, brand: str = "") -> bool:
@@ -217,13 +222,13 @@ def normalize_product(raw: dict[str, Any], ribbons: dict[str, Any], source: str)
         "name": name,
         "slug": slug,
         "brand": brand,
-        "url": PRODUCT_URL.format(slug=slug) if slug else BRAND_URL,
+        "url": PRODUCT_URL.format(sok_id=sok_id, slug=slug) if sok_id and slug else BRAND_URL,
         "price": cents_to_euros(raw.get("finalPrice") if raw.get("finalPrice") is not None else raw.get("price")),
         "image": raw.get("mainImage"),
         "source": source,
         "store": "Prisma",
         "availability": availability,
-        "available": is_available(availability),
+        "available": is_purchasable(availability),
     }
 
 
@@ -256,6 +261,30 @@ def fetch_brand_products() -> tuple[list[dict[str, Any]], int]:
         page += 1
         time.sleep(REQUEST_PAUSE_SECONDS)
     return list(collected.values()), total
+
+
+def fetch_prisma_cart_availability(sok_id: str, slug: str) -> dict[str, bool]:
+    url = PRODUCT_URL.format(sok_id=sok_id, slug=slug)
+    page_props = parse_next_data(fetch_html(url))
+    raw = (page_props.get("availability") or {}).get(sok_id) or {}
+    return {
+        "ecom": bool(raw.get("ecom")),
+        "click_and_collect": bool(raw.get("clickAndCollect")),
+        "store": bool(raw.get("brickAndMortar")),
+    }
+
+
+def enrich_prisma_cart_status(products: list[dict[str, Any]]) -> None:
+    for product in products:
+        if product.get("store") != "Prisma" or not product.get("id") or not product.get("slug"):
+            continue
+        try:
+            availability = fetch_prisma_cart_availability(product["id"], product["slug"])
+            product["availability"] = availability
+            product["available"] = is_purchasable(availability)
+        except Exception as error:  # noqa: BLE001
+            log(f"Prisma tuotesivu {product['id']}: {error}")
+        time.sleep(REQUEST_PAUSE_SECONDS)
 
 
 def fetch_search_products() -> list[dict[str, Any]]:
@@ -459,6 +488,8 @@ def collect_matches() -> dict[str, Any]:
 
     if errors and not prisma_products and not karkkainen_products and not konsolinet_products:
         raise RuntimeError(" | ".join(errors))
+
+    enrich_prisma_cart_status([product for product in matches.values() if product.get("store") == "Prisma"])
 
     return {
         "checked_at": now_iso(),
@@ -682,9 +713,12 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
             if product.get("notify_listed", True):
                 newly_listed.append(product)
             record["alerted_listed"] = True
-        if product["available"] and not record["alerted_available"]:
-            newly_available.append(product)
-            record["alerted_available"] = True
+        if product["available"]:
+            if not record["alerted_available"]:
+                newly_available.append(product)
+                record["alerted_available"] = True
+        else:
+            record["alerted_available"] = False
         known[product["id"]] = record
 
     state["last_check"] = snapshot["checked_at"]
@@ -819,6 +853,12 @@ def self_test() -> int:
         if is_anniversary_product(name):
             print(f"FAIL: ei olisi saanut täsmätä: {name}")
             failed = True
+    if is_purchasable({"ecom": False, "click_and_collect": False, "store": True}):
+        print("FAIL: faded ostoskori / pelkkä myymälälippu ei saa olla ostettavissa")
+        failed = True
+    if not is_purchasable({"ecom": True, "click_and_collect": False, "store": False}):
+        print("FAIL: vihreä ostoskori (ecom) olisi pitänyt olla ostettavissa")
+        failed = True
     if not is_anniversary_product("30th Celebration Elite Trainer Box", "Pokemon", require_pokemon=True):
         print("FAIL: brand+30th Celebration olisi pitänyt täsmätä haussa")
         failed = True
