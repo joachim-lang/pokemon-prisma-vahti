@@ -43,6 +43,9 @@ ELISA_OWN_PRICE_RE = re.compile(
     r'data-testid="vendor-price-elisa"[^>]*>.*?<span>\s*Elisa\s*</span>\s*<span>\s*([0-9\s\u00a0.,]+)',
     re.IGNORECASE | re.DOTALL,
 )
+ELISA_VENDOR_PRICE_RE = re.compile(
+    r'"domain"\s*:\s*"(?P<domain>[^"]+)"\s*,\s*"price"\s*:\s*(?P<price>\d+(?:\.\d+)?)',
+)
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -86,16 +89,25 @@ def threshold() -> float:
 
 
 def fetch(url: str, accept: str = "text/html,application/xhtml+xml") -> str:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": accept,
-            "Accept-Language": "fi-FI,fi;q=0.9,en;q=0.8",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=25) as response:
-        return response.read().decode("utf-8", "replace")
+    last_error: Exception | None = None
+    for attempt in range(3):
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": accept,
+                "Accept-Language": "fi-FI,fi;q=0.9,en;q=0.8",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=25) as response:
+                return response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as error:
+            last_error = error
+            if error.code not in {429, 503} or attempt == 2:
+                raise
+            time.sleep(4 * (attempt + 1))
+    raise last_error or RuntimeError(f"Haku epäonnistui: {url}")
 
 
 def fetch_json(url: str) -> Any:
@@ -309,16 +321,55 @@ def check_store(store: dict[str, Any]) -> dict[str, Any]:
         "url": store["url"],
         "price": None,
         "error": None,
+        "html": "",
     }
     try:
         html = ""
         if store.get("fetch") != "json":
             html = fetch(store["url"])
+            result["html"] = html
         result["price"] = store["parse"](html)
     except Exception as error:  # noqa: BLE001
         result["error"] = str(error)
         log(f"VIRHE {store['name']}: {error}")
     return result
+
+
+VENDOR_DOMAINS = {
+    "verkkokauppa": "verkkokauppa.com",
+    "gigantti": "gigantti.fi",
+    "dna": "kauppa.dna.fi",
+    "telia": "telia.fi",
+    "power": "power.fi",
+}
+
+
+def elisa_vendor_prices(html: str) -> dict[str, float]:
+    prices: dict[str, float] = {}
+    for match in ELISA_VENDOR_PRICE_RE.finditer(html):
+        domain = match.group("domain").lower()
+        price = parse_fi_price(match.group("price"))
+        if price is not None:
+            prices[domain] = price
+    return prices
+
+
+def fill_missing_from_elisa(results: list[dict[str, Any]]) -> None:
+    elisa = next((item for item in results if item["id"] == "elisa" and item.get("html")), None)
+    if not elisa:
+        return
+    vendors = elisa_vendor_prices(elisa["html"])
+    if not vendors:
+        return
+    for item in results:
+        if item["price"] is not None:
+            continue
+        domain = VENDOR_DOMAINS.get(item["id"])
+        if domain and domain in vendors:
+            item["price"] = vendors[domain]
+            item["error"] = None
+            item["source"] = "elisa-vertailu"
+            log(f"{item['name']}: {format_price(item['price'])} Elisan hintavertailusta")
 
 
 def collect_prices() -> dict[str, Any]:
@@ -327,6 +378,10 @@ def collect_prices() -> dict[str, Any]:
         results.append(check_store(store))
         if index < len(STORES) - 1:
             time.sleep(REQUEST_PAUSE_SECONDS)
+    if any(item["price"] is None for item in results):
+        fill_missing_from_elisa(results)
+    for item in results:
+        item.pop("html", None)
     priced = [item for item in results if item["price"] is not None]
     return {
         "checked_at": now_iso(),
@@ -607,6 +662,12 @@ def self_test() -> int:
     ]}</script>'''
     if ld_consumer_price(html) != 899.0:
         print(f"FAIL: Gigantti-tarjous {ld_consumer_price(html)}")
+        failed = True
+    vendors = elisa_vendor_prices(
+        '"domain":"gigantti.fi","price":899,"stockStatus":"InStock"'
+    )
+    if vendors.get("gigantti.fi") != 899.0:
+        print(f"FAIL: Elisa-vertailu {vendors}")
         failed = True
     if failed:
         return 1
