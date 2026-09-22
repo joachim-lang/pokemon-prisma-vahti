@@ -14,15 +14,14 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 STATE_PATH = DATA_DIR / "iphone_state.json"
 LOG_PATH = DATA_DIR / "iphone.log"
 
-PRODUCT_NAME = "iPhone 17 256 Gt laventeli"
-DEFAULT_THRESHOLD = 800.0
+PRODUCT_NAME = "iPhone 17 / 17 Pro"
 REQUEST_PAUSE_SECONDS = 1.2
 NEXT_DATA_RE = re.compile(
     r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
@@ -78,14 +77,14 @@ def load_env() -> None:
         os.environ.setdefault(key.strip(), value.strip().strip("'").strip('"'))
 
 
-def threshold() -> float:
-    raw = (os.environ.get("IPHONE_PRICE_THRESHOLD") or "").strip()
+def env_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
     if not raw:
-        return DEFAULT_THRESHOLD
+        return default
     try:
         return float(raw.replace(",", "."))
     except ValueError:
-        return DEFAULT_THRESHOLD
+        return default
 
 
 def fetch(url: str, accept: str = "text/html,application/xhtml+xml") -> str:
@@ -200,22 +199,22 @@ def ld_consumer_price(html: str) -> float | None:
     return min(prices) if prices else None
 
 
-def parse_verkkokauppa(_html: str | None = None) -> float:
-    data = fetch_json("https://web-api.service.verkkokauppa.com/product/1011416")
+def parse_verkkokauppa(_html: str, store: dict[str, Any]) -> float:
+    data = fetch_json(f"https://web-api.service.verkkokauppa.com/product/{store['vk_id']}")
     price = parse_fi_price((data.get("price") or {}).get("current"))
     if price is None:
         raise RuntimeError("Verkkokauppa.com ei palauttanut hintaa.")
     return price
 
 
-def parse_gigantti(html: str) -> float:
+def parse_gigantti(html: str, _store: dict[str, Any] | None = None) -> float:
     price = ld_consumer_price(html)
     if price is None:
         raise RuntimeError("Gigantin sivulta ei löytynyt kertahintaa.")
     return price
 
 
-def parse_dna(html: str) -> float:
+def parse_dna(html: str, _store: dict[str, Any] | None = None) -> float:
     match = NEXT_DATA_RE.search(html)
     if not match:
         raise RuntimeError("DNA-sivulta ei löytynyt tuotetietoja.")
@@ -238,7 +237,7 @@ def parse_dna(html: str) -> float:
     raise RuntimeError("DNA:n kertahintaa (ilman liittymää) ei löytynyt.")
 
 
-def parse_elisa(html: str) -> float:
+def parse_elisa(html: str, _store: dict[str, Any] | None = None) -> float:
     match = ELISA_OWN_PRICE_RE.search(html)
     if match:
         price = parse_fi_price(match.group(1))
@@ -250,7 +249,7 @@ def parse_elisa(html: str) -> float:
     return price
 
 
-def parse_telia(html: str) -> float:
+def parse_telia(html: str, _store: dict[str, Any] | None = None) -> float:
     match = KERTAMAKSU_RE.search(html)
     if match:
         price = parse_fi_price(match.group(1))
@@ -264,52 +263,112 @@ def parse_telia(html: str) -> float:
     raise RuntimeError("Telian kertamaksua ei löytynyt.")
 
 
-def parse_power(html: str) -> float:
+def parse_power(html: str, _store: dict[str, Any] | None = None) -> float:
     price = ld_consumer_price(html)
     if price is None:
         raise RuntimeError("Powerin sivulta ei löytynyt kertahintaa.")
     return price
 
 
-StoreParser = Callable[[str], float]
+def store(store_id: str, name: str, url: str, *, parse, fetch: str = "html", vk_id: str | None = None) -> dict[str, Any]:
+    item = {"id": store_id, "name": name, "url": url, "parse": parse, "fetch": fetch}
+    if vk_id:
+        item["vk_id"] = vk_id
+    return item
 
-STORES: list[dict[str, Any]] = [
+
+PRODUCTS: list[dict[str, Any]] = [
     {
-        "id": "verkkokauppa",
-        "name": "Verkkokauppa.com",
-        "url": "https://www.verkkokauppa.com/fi/product/1011416/Apple-iPhone-17-256-Gt-puhelin-laventeli",
-        "fetch": "json",
-        "parse": parse_verkkokauppa,
+        "id": "17-lavender-256",
+        "name": "iPhone 17 256 Gt laventeli",
+        "threshold_env": "IPHONE_PRICE_THRESHOLD",
+        "threshold_default": 800.0,
+        "stores": [
+            store(
+                "verkkokauppa",
+                "Verkkokauppa.com",
+                "https://www.verkkokauppa.com/fi/product/1011416/Apple-iPhone-17-256-Gt-puhelin-laventeli",
+                parse=parse_verkkokauppa,
+                fetch="json",
+                vk_id="1011416",
+            ),
+            store(
+                "gigantti",
+                "Gigantti",
+                "https://www.gigantti.fi/product/puhelimet-tabletit-ja-alykellot/puhelimet/iphone-17-5g-alypuhelin-256-gb-laventeli/982721",
+                parse=parse_gigantti,
+            ),
+            store(
+                "dna",
+                "DNA",
+                "https://kauppa.dna.fi/tuote/p/apple-iphone-17-5g-256-gt-laventeli",
+                parse=parse_dna,
+            ),
+            store(
+                "elisa",
+                "Elisa",
+                "https://elisa.fi/kauppa/tuote/apple-iphone-17-256-gt-5g",
+                parse=parse_elisa,
+            ),
+            store(
+                "telia",
+                "Telia",
+                "https://www.telia.fi/kauppa/tuote/apple-iphone-17",
+                parse=parse_telia,
+            ),
+            store(
+                "power",
+                "Power",
+                "https://www.power.fi/puhelimet-ja-kamerat/puhelimet/apple-iphone-17-256-gt-laventeli/p-4157287/",
+                parse=parse_power,
+            ),
+        ],
     },
     {
-        "id": "gigantti",
-        "name": "Gigantti",
-        "url": "https://www.gigantti.fi/product/puhelimet-tabletit-ja-alykellot/puhelimet/iphone-17-5g-alypuhelin-256-gb-laventeli/982721",
-        "parse": parse_gigantti,
-    },
-    {
-        "id": "dna",
-        "name": "DNA",
-        "url": "https://kauppa.dna.fi/tuote/p/apple-iphone-17-5g-256-gt-laventeli",
-        "parse": parse_dna,
-    },
-    {
-        "id": "elisa",
-        "name": "Elisa",
-        "url": "https://elisa.fi/kauppa/tuote/apple-iphone-17-256-gt-5g",
-        "parse": parse_elisa,
-    },
-    {
-        "id": "telia",
-        "name": "Telia",
-        "url": "https://www.telia.fi/kauppa/tuote/apple-iphone-17",
-        "parse": parse_telia,
-    },
-    {
-        "id": "power",
-        "name": "Power",
-        "url": "https://www.power.fi/puhelimet-ja-kamerat/puhelimet/apple-iphone-17-256-gt-laventeli/p-4157287/",
-        "parse": parse_power,
+        "id": "17pro-orange-256",
+        "name": "iPhone 17 Pro 256 Gt kosminen oranssi",
+        "threshold_env": "IPHONE_PRO_PRICE_THRESHOLD",
+        "threshold_default": 1000.0,
+        "stores": [
+            store(
+                "verkkokauppa",
+                "Verkkokauppa.com",
+                "https://www.verkkokauppa.com/fi/product/1011473/Apple-iPhone-17-Pro-256-Gt-puhelin-kosminen-oranssi",
+                parse=parse_verkkokauppa,
+                fetch="json",
+                vk_id="1011473",
+            ),
+            store(
+                "gigantti",
+                "Gigantti",
+                "https://www.gigantti.fi/product/puhelimet-tabletit-ja-alykellot/puhelimet/iphone-17-pro-5g-alypuhelin-256-gb-kosminen-oranssi/982706",
+                parse=parse_gigantti,
+            ),
+            store(
+                "dna",
+                "DNA",
+                "https://kauppa.dna.fi/tuote/p/apple-iphone-17-pro-5g-256-gt-kosminen-oranssi",
+                parse=parse_dna,
+            ),
+            store(
+                "elisa",
+                "Elisa",
+                "https://elisa.fi/kauppa/tuote/apple-iphone-17-pro-256-gt-5g",
+                parse=parse_elisa,
+            ),
+            store(
+                "telia",
+                "Telia",
+                "https://www.telia.fi/kauppa/tuote/apple-iphone-17-pro",
+                parse=parse_telia,
+            ),
+            store(
+                "power",
+                "Power",
+                "https://www.power.fi/puhelimet-ja-kamerat/puhelimet/apple-iphone-17-pro-256-gt-kosminen-oranssi/p-4157296/",
+                parse=parse_power,
+            ),
+        ],
     },
 ]
 
@@ -328,7 +387,7 @@ def check_store(store: dict[str, Any]) -> dict[str, Any]:
         if store.get("fetch") != "json":
             html = fetch(store["url"])
             result["html"] = html
-        result["price"] = store["parse"](html)
+        result["price"] = store["parse"](html, store)
     except Exception as error:  # noqa: BLE001
         result["error"] = str(error)
         log(f"VIRHE {store['name']}: {error}")
@@ -372,11 +431,16 @@ def fill_missing_from_elisa(results: list[dict[str, Any]]) -> None:
             log(f"{item['name']}: {format_price(item['price'])} Elisan hintavertailusta")
 
 
-def collect_prices() -> dict[str, Any]:
+def collect_product(product: dict[str, Any]) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
-    for index, store in enumerate(STORES):
-        results.append(check_store(store))
-        if index < len(STORES) - 1:
+    stores = product["stores"]
+    for index, item in enumerate(stores):
+        checked = check_store(item)
+        checked["product_id"] = product["id"]
+        checked["product_name"] = product["name"]
+        checked["state_key"] = f"{product['id']}:{item['id']}"
+        results.append(checked)
+        if index < len(stores) - 1:
             time.sleep(REQUEST_PAUSE_SECONDS)
     if any(item["price"] is None for item in results):
         fill_missing_from_elisa(results)
@@ -384,11 +448,26 @@ def collect_prices() -> dict[str, Any]:
         item.pop("html", None)
     priced = [item for item in results if item["price"] is not None]
     return {
-        "checked_at": now_iso(),
-        "threshold": threshold(),
+        "id": product["id"],
+        "name": product["name"],
+        "threshold": env_float(product["threshold_env"], product["threshold_default"]),
         "results": results,
         "best": min(priced, key=lambda item: item["price"]) if priced else None,
         "errors": [item for item in results if item["error"]],
+    }
+
+
+def collect_prices() -> dict[str, Any]:
+    products = []
+    for index, product in enumerate(PRODUCTS):
+        products.append(collect_product(product))
+        if index < len(PRODUCTS) - 1:
+            time.sleep(REQUEST_PAUSE_SECONDS)
+    return {
+        "checked_at": now_iso(),
+        "products": products,
+        "results": [item for product in products for item in product["results"]],
+        "errors": [item for product in products for item in product["errors"]],
     }
 
 
@@ -484,9 +563,9 @@ def send_to_channels(*, slack_payload: dict[str, Any] | None = None, telegram_te
         raise RuntimeError(" | ".join(errors) if errors else "Ei ilmoituskanavaa.")
 
 
-def snapshot_lines(snapshot: dict[str, Any]) -> list[str]:
+def snapshot_lines(product: dict[str, Any]) -> list[str]:
     lines = []
-    for item in snapshot["results"]:
+    for item in product["results"]:
         if item["price"] is not None:
             lines.append(f"{item['name']}: {format_price(item['price'])}")
         else:
@@ -505,9 +584,9 @@ def telegram_price_message(title: str, items: list[dict[str, Any]], footer: str 
     return "\n".join(lines).strip()
 
 
-def notify_drops(items: list[dict[str, Any]], limit: float) -> None:
-    title = f"{PRODUCT_NAME} alle {limit:.0f} €"
-    fallback = f"{PRODUCT_NAME} putosi alle {limit:.0f} €: " + ", ".join(
+def notify_drops(product_name: str, items: list[dict[str, Any]], limit: float) -> None:
+    title = f"{product_name} alle {limit:.0f} €"
+    fallback = f"{product_name} putosi alle {limit:.0f} €: " + ", ".join(
         f"{item['name']} {format_price(item['price'])}" for item in items
     )
     blocks = [
@@ -540,28 +619,44 @@ def notify_text(text: str) -> None:
 def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> dict[str, Any]:
     state = load_state()
     known = state.setdefault("stores", {})
-    limit = snapshot["threshold"]
+    announced = state.setdefault("announced_products", [])
+    if state.get("announced") and "17-lavender-256" not in announced:
+        announced.append("17-lavender-256")
     drops: list[dict[str, Any]] = []
+    announce_texts: list[str] = []
 
-    for item in snapshot["results"]:
-        previous = known.get(item["id"], {})
-        record = {
-            "name": item["name"],
-            "url": item["url"],
-            "price": item["price"],
-            "error": item["error"],
-            "last_seen": snapshot["checked_at"],
-            "alerted_below": bool(previous.get("alerted_below")),
-        }
-        if item["price"] is not None:
-            if item["price"] < limit and not record["alerted_below"]:
-                drops.append(item)
-                record["alerted_below"] = True
-            elif item["price"] >= limit:
-                record["alerted_below"] = False
-        known[item["id"]] = record
+    for product in snapshot["products"]:
+        limit = product["threshold"]
+        product_drops: list[dict[str, Any]] = []
+        for item in product["results"]:
+            key = item["state_key"]
+            previous = known.get(key) or known.get(item["id"], {})
+            record = {
+                "name": item["name"],
+                "url": item["url"],
+                "price": item["price"],
+                "error": item["error"],
+                "last_seen": snapshot["checked_at"],
+                "alerted_below": bool(previous.get("alerted_below")),
+            }
+            if item["price"] is not None:
+                if item["price"] < limit and not record["alerted_below"]:
+                    product_drops.append(item)
+                    record["alerted_below"] = True
+                elif item["price"] >= limit:
+                    record["alerted_below"] = False
+            known[key] = record
+        if announce and product["id"] not in announced:
+            announce_texts.append(
+                f"{product['name']} -hintavahti käynnissä (kynnys alle {limit:.0f} €).\n"
+                + "\n".join(snapshot_lines(product))
+            )
+            announced.append(product["id"])
+        if product_drops:
+            drops.append({"product": product, "items": product_drops})
 
     state["last_check"] = snapshot["checked_at"]
+    state["announced_products"] = announced
     if snapshot["errors"] and not any(item["price"] is not None for item in snapshot["results"]):
         state["consecutive_errors"] = int(state.get("consecutive_errors") or 0) + 1
     else:
@@ -569,21 +664,25 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
         state["error_alerted"] = False
 
     if dry_run:
-        return {"drops": drops, "would_announce": announce and not state.get("announced")}
+        return {
+            "drops": [item for group in drops for item in group["items"]],
+            "would_announce": bool(announce_texts),
+        }
 
-    if announce and not state.get("announced"):
-        lines = snapshot_lines(snapshot)
-        notify_text(
-            f"{PRODUCT_NAME} -hintavahti käynnissä (kynnys alle {limit:.0f} €).\n" + "\n".join(lines)
-        )
+    for text in announce_texts:
+        notify_text(text)
         state["announced"] = True
 
-    if drops:
-        notify_drops(drops, limit)
-        log("Hälytys: " + ", ".join(f"{item['name']} {format_price(item['price'])}" for item in drops))
+    for group in drops:
+        product = group["product"]
+        notify_drops(product["name"], group["items"], product["threshold"])
+        log(
+            "Hälytys: "
+            + ", ".join(f"{item['name']} {format_price(item['price'])}" for item in group["items"])
+        )
 
     save_state(state)
-    return {"drops": drops}
+    return {"drops": [item for group in drops for item in group["items"]]}
 
 
 def handle_error(error: Exception, dry_run: bool) -> None:
@@ -608,14 +707,16 @@ def run_once(announce: bool, dry_run: bool) -> int:
         handle_error(error, dry_run)
         return 1
 
-    limit = snapshot["threshold"]
-    log(f"Tarkistus ok: kynnys alle {limit:.0f} €")
-    for item in snapshot["results"]:
-        if item["price"] is not None:
-            flag = " ALLE" if item["price"] < limit else ""
-            log(f"  - {item['name']}: {format_price(item['price'])}{flag} {item['url']}")
-        else:
-            log(f"  - {item['name']}: VIRHE {item['error']}")
+    log(f"Tarkistus ok: {len(snapshot['products'])} tuotetta")
+    for product in snapshot["products"]:
+        limit = product["threshold"]
+        log(f"{product['name']} (kynnys alle {limit:.0f} €)")
+        for item in product["results"]:
+            if item["price"] is not None:
+                flag = " ALLE" if item["price"] < limit else ""
+                log(f"  - {item['name']}: {format_price(item['price'])}{flag} {item['url']}")
+            else:
+                log(f"  - {item['name']}: VIRHE {item['error']}")
 
     if not any(item["price"] is not None for item in snapshot["results"]):
         handle_error(RuntimeError("Yksikään kauppa ei palauttanut hintaa."), dry_run)

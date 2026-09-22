@@ -30,6 +30,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           IPHONE_PRICE_THRESHOLD: "800"
+          IPHONE_PRO_PRICE_THRESHOLD: "1000"
         run: python iphone_watcher.py --once --announce
 
       - name: Tallenna tila
