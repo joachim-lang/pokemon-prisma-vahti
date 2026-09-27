@@ -35,6 +35,8 @@ SEARCH_URLS = (
     "https://www.prisma.fi/haku?search=pokemon+ultra+premium",
     "https://www.prisma.fi/haku?search=pokemon+ultra-premium",
     "https://www.prisma.fi/haku?search=30th+ultra+premium",
+    "https://www.prisma.fi/haku?search=pokemon+delta+reign",
+    "https://www.prisma.fi/haku?search=delta+reign",
 )
 PRODUCT_URL = "https://www.prisma.fi/tuotteet/{sok_id}/{slug}"
 KARKKAINEN_LISTING_URL = (
@@ -48,6 +50,8 @@ KARKKAINEN_SEARCH_URLS = (
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=30-vuotisjuhla",
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+ultra+premium",
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+ultra-premium",
+    "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+delta+reign",
+    "https://www.karkkainen.com/verkkokauppa/search?searchTerm=delta+reign",
 )
 KARKKAINEN_BASE = "https://www.karkkainen.com/verkkokauppa"
 VK_SITE = "https://www.verkkokauppa.com"
@@ -61,6 +65,13 @@ VK_CATALOG_URL = (
 )
 VK_PREMIUM_SEARCH_URL = (
     f"{VK_SITE}/fi/catalog/trading-cards/kerailykortit?query=pokemon+ultra+premium"
+)
+VK_DELTA_SEARCH_URL = (
+    f"{VK_SITE}/fi/catalog/trading-cards/kerailykortit?query=pokemon+delta+reign"
+)
+VK_EXTRA_SEARCHES = (
+    ("pokemon ultra premium", VK_PREMIUM_SEARCH_URL),
+    ("pokemon delta reign", VK_DELTA_SEARCH_URL),
 )
 VK_PRODUCT_API = "https://web-api.service.verkkokauppa.com/product/{pid}"
 VK_AVAIL_API = "https://product.service.verkkokauppa.com/fi/api/v1/availability"
@@ -130,6 +141,7 @@ PRISMA_WATCH_PRODUCTS = (
 PRISMA_FAST_SEARCH_URLS = (
     "https://www.prisma.fi/haku?search=pokemon+30th",
     "https://www.prisma.fi/haku?search=pokemon+ultra+premium",
+    "https://www.prisma.fi/haku?search=pokemon+delta+reign",
 )
 MAX_PAGES = 8
 REQUEST_PAUSE_SECONDS = 1.5
@@ -176,6 +188,7 @@ IGNORED_BOOSTER_RE = re.compile(
 )
 BOOSTER_NAME_RE = re.compile(r"booster", re.IGNORECASE)
 ULTRA_PREMIUM_RE = re.compile(r"ultra[\s-]*premium|\bupc\b", re.IGNORECASE)
+DELTA_REIGN_RE = re.compile(r"delta\s*reign", re.IGNORECASE)
 POKEMON_RE = re.compile(r"pok[eé]mon|\btcg\b", re.IGNORECASE)
 TCG_RE = re.compile(
     r"booster|elite trainer|\betb\b|collection|mini tin|\btin\b|blister|binder|upc",
@@ -356,9 +369,15 @@ def is_ultra_premium_product(name: str) -> bool:
     return bool(ULTRA_PREMIUM_RE.search(name)) and bool(POKEMON_RE.search(name))
 
 
+def is_delta_reign_product(name: str) -> bool:
+    return bool(DELTA_REIGN_RE.search(name)) and bool(POKEMON_RE.search(name))
+
+
 def is_watched_drop(name: str, product_id: str = "") -> bool:
     if is_ignored_booster(name, product_id) or is_ignored_marketing(name):
         return False
+    if is_delta_reign_product(name):
+        return True
     if not (is_booster_product(name) or is_ultra_premium_product(name)):
         return False
     return is_anniversary_product(name, require_pokemon=True)
@@ -381,6 +400,8 @@ def should_watch_product(
 ) -> bool:
     if is_ignored_booster(name, product_id) or is_ignored_marketing(name):
         return False
+    if is_delta_reign_product(name):
+        return True
     if is_anniversary_product(name, brand, require_pokemon=require_pokemon):
         return True
     if allow_booster and is_watched_drop(name, product_id):
@@ -754,6 +775,19 @@ def fetch_verkkokauppa_catalog() -> tuple[list[dict[str, Any]], int]:
     return fetch_verkkokauppa_search("pokemon 30", VK_CATALOG_URL)
 
 
+def fetch_verkkokauppa_extra_searches() -> tuple[list[dict[str, Any]], int]:
+    collected: dict[str, dict[str, Any]] = {}
+    total = 0
+    for query_text, referer in VK_EXTRA_SEARCHES:
+        products, count = fetch_verkkokauppa_search(query_text, referer)
+        total += count
+        for product in products:
+            if product.get("id"):
+                collected[product["id"]] = product
+        time.sleep(0.4)
+    return list(collected.values()), total
+
+
 def collect_vk_drop_listings(products: list[dict[str, Any]], exclude_ids: set[str]) -> list[dict[str, Any]]:
     return [
         product
@@ -769,10 +803,10 @@ def fetch_verkkokauppa_watch() -> tuple[dict[str, Any], list[dict[str, Any]], in
     time.sleep(REQUEST_PAUSE_SECONDS)
     catalog, total = fetch_verkkokauppa_catalog()
     time.sleep(REQUEST_PAUSE_SECONDS)
-    premium, premium_total = fetch_verkkokauppa_search("pokemon ultra premium", VK_PREMIUM_SEARCH_URL)
+    extra, extra_total = fetch_verkkokauppa_extra_searches()
     exclude = {etb["id"]}
-    drops = collect_vk_drop_listings(catalog + premium, exclude)
-    return etb, drops, total + premium_total
+    drops = collect_vk_drop_listings(catalog + extra, exclude)
+    return etb, drops, total + extra_total
 
 
 def vk_watch_product(spec: dict[str, str], availability_raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -843,9 +877,9 @@ def fetch_prisma_fast_search() -> list[dict[str, Any]]:
 def collect_fast_vk_drops() -> list[dict[str, Any]]:
     catalog, _total = fetch_verkkokauppa_catalog()
     time.sleep(0.4)
-    premium, _premium_total = fetch_verkkokauppa_search("pokemon ultra premium", VK_PREMIUM_SEARCH_URL)
+    extra, _extra_total = fetch_verkkokauppa_extra_searches()
     watched = {f"verkkokauppa:{spec['pid']}" for spec in VK_WATCH_PRODUCTS}
-    return collect_vk_drop_listings(catalog + premium, watched)
+    return collect_vk_drop_listings(catalog + extra, watched)
 
 
 def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) -> dict[str, Any]:
@@ -1486,6 +1520,18 @@ def self_test() -> int:
         require_pokemon=True,
     ):
         print("FAIL: 30th Ultra Premium search-osumaa ei saisi jättää")
+        failed = True
+    if is_delta_reign_product("Pokemon ME05 Pitch Black Booster Bundle"):
+        print("FAIL: ME05 ei ole Delta Reign")
+        failed = True
+    if not is_delta_reign_product("Pokémon TCG Delta Reign Elite Trainer Box"):
+        print("FAIL: Delta Reign ETB olisi pitänyt tunnistaa")
+        failed = True
+    if not is_watched_drop("Pokémon TCG Delta Reign Booster Bundle") or not should_watch_product(
+        "Pokemon Delta Reign Ultra Premium Collection",
+        require_pokemon=True,
+    ):
+        print("FAIL: Delta Reign -tuote olisi pitänyt tulla vahtiin ilman 30th-sanaa")
         failed = True
     sample = telegram_product_message(
         "OSTA NYT — 30th Celebration myynnissä",
