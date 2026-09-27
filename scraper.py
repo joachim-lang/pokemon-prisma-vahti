@@ -462,6 +462,29 @@ def fetch_brand_products() -> tuple[list[dict[str, Any]], int]:
     return list(collected.values()), total
 
 
+def fetch_prisma_brand_watch() -> list[dict[str, Any]]:
+    collected: dict[str, dict[str, Any]] = {}
+    page = 1
+    while page <= 3:
+        url = BRAND_URL if page == 1 else f"{BRAND_URL}?page={page}"
+        page_props = parse_next_data(fetch_html(url))
+        batch = products_from_page(page_props, "prisma-brand")
+        if not batch:
+            break
+        for product in batch:
+            if product["id"] and should_watch_product(
+                product["name"],
+                product.get("brand", ""),
+                require_pokemon=True,
+                allow_booster=True,
+                product_id=product.get("id") or "",
+            ):
+                collected[product["id"]] = product
+        page += 1
+        time.sleep(REQUEST_PAUSE_SECONDS)
+    return list(collected.values())
+
+
 def fetch_prisma_cart_availability(sok_id: str, slug: str) -> dict[str, bool]:
     url = PRODUCT_URL.format(sok_id=sok_id, slug=slug)
     page_props = parse_next_data(fetch_html(url))
@@ -935,12 +958,15 @@ def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) ->
     if include_listings:
         boosters, booster_errors = collect_store_matches(collect_fast_vk_drops, "Verkkokauppa-haku")
         prisma_search, prisma_search_errors = collect_store_matches(fetch_prisma_fast_search, "Prisma-haku")
+        prisma_brand, prisma_brand_errors = collect_store_matches(fetch_prisma_brand_watch, "Prisma-lista")
         prisma_watch, prisma_watch_errors = collect_store_matches(fetch_prisma_watch_products, "Prisma-ostoskori")
         errors.extend(booster_errors)
         errors.extend(prisma_search_errors)
+        errors.extend(prisma_brand_errors)
         errors.extend(prisma_watch_errors)
         add(boosters)
         add(prisma_search)
+        add(prisma_brand)
         add(prisma_watch)
 
     if include_karkkainen:
