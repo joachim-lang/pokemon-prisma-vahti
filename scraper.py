@@ -39,6 +39,7 @@ SEARCH_URLS = (
     "https://www.prisma.fi/haku?search=delta+reign",
 )
 PRODUCT_URL = "https://www.prisma.fi/tuotteet/{sok_id}/{slug}"
+KARKKAINEN_CARDS_URL = "https://www.karkkainen.com/verkkokauppa/kerailykortit"
 KARKKAINEN_LISTING_URL = (
     "https://www.karkkainen.com/verkkokauppa/kerailykortit"
     "?offset={offset}&facet=attributes.Tuotemerkki%3APokemon"
@@ -536,7 +537,7 @@ def karkkainen_url(raw: dict[str, Any]) -> str:
         return "https://www.karkkainen.com" + href
     if href.startswith("/"):
         return KARKKAINEN_BASE + href
-    return KARKKAINEN_LISTING_URL.format(offset=0)
+    return KARKKAINEN_CARDS_URL
 
 
 def normalize_karkkainen_product(raw: dict[str, Any], source: str) -> dict[str, Any]:
@@ -586,6 +587,34 @@ def fetch_karkkainen_products() -> tuple[list[dict[str, Any]], int]:
     return list(collected.values()), total
 
 
+def fetch_karkkainen_cards() -> list[dict[str, Any]]:
+    collected: dict[str, dict[str, Any]] = {}
+    offset = 0
+    page = 1
+    while page <= 3:
+        url = KARKKAINEN_CARDS_URL if offset <= 0 else f"{KARKKAINEN_CARDS_URL}?offset={offset}"
+        listing = parse_karkkainen_listing(fetch_html(url))
+        batch = listing.get("contents") or []
+        if not batch:
+            break
+        for raw in batch:
+            if not isinstance(raw, dict):
+                continue
+            product = normalize_karkkainen_product(raw, "karkkainen-cards")
+            if product["id"] and should_watch_product(
+                product["name"],
+                product.get("brand", ""),
+                require_pokemon=True,
+                allow_booster=True,
+                product_id=product.get("id") or "",
+            ):
+                collected[product["id"]] = product
+        offset += max(len(batch), 1)
+        page += 1
+        time.sleep(REQUEST_PAUSE_SECONDS)
+    return list(collected.values())
+
+
 def fetch_karkkainen_search() -> list[dict[str, Any]]:
     collected: dict[str, dict[str, Any]] = {}
     for url in KARKKAINEN_SEARCH_URLS:
@@ -602,6 +631,14 @@ def fetch_karkkainen_search() -> list[dict[str, Any]]:
             ):
                 collected[product["id"]] = product
         time.sleep(REQUEST_PAUSE_SECONDS)
+    return list(collected.values())
+
+
+def fetch_karkkainen_watch() -> list[dict[str, Any]]:
+    collected: dict[str, dict[str, Any]] = {}
+    for product in fetch_karkkainen_search() + fetch_karkkainen_cards():
+        if product.get("id"):
+            collected[product["id"]] = product
     return list(collected.values())
 
 
@@ -907,7 +944,7 @@ def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) ->
         add(prisma_watch)
 
     if include_karkkainen:
-        karkkainen, karkkainen_errors = collect_store_matches(fetch_karkkainen_search, "Kärkkäinen-haku")
+        karkkainen, karkkainen_errors = collect_store_matches(fetch_karkkainen_watch, "Kärkkäinen")
         errors.extend(karkkainen_errors)
         add(karkkainen)
 
@@ -963,7 +1000,7 @@ def collect_matches() -> dict[str, Any]:
         "Prisma",
     )
     karkkainen_result, karkkainen_errors = collect_store_matches(
-        lambda: (fetch_karkkainen_products(), fetch_karkkainen_search()),
+        lambda: (fetch_karkkainen_products(), fetch_karkkainen_watch()),
         "Kärkkäinen",
     )
     vk_result, vk_errors = collect_store_matches(fetch_verkkokauppa_watch, "Verkkokauppa")
@@ -1175,7 +1212,7 @@ def notify_products(title: str, fallback: str, products: list[dict[str, Any]]) -
                     "type": "mrkdwn",
                     "text": (
                         f"<{BRAND_URL}|Prisma> · "
-                        f"<{KARKKAINEN_LISTING_URL.format(offset=0)}|Kärkkäinen> · "
+                        f"<{KARKKAINEN_CARDS_URL}|Kärkkäinen> · "
                         f"<{VK_CATALOG_URL}|Verkkokauppa>"
                     ),
                 }
