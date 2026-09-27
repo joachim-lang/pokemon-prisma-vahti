@@ -32,6 +32,9 @@ SEARCH_URLS = (
     "https://www.prisma.fi/haku?search=30-vuotisjuhla",
     "https://www.prisma.fi/haku?search=pokemon+30-vuotis",
     "https://www.prisma.fi/haku?search=pokemon+juhlavuosi",
+    "https://www.prisma.fi/haku?search=pokemon+ultra+premium",
+    "https://www.prisma.fi/haku?search=pokemon+ultra-premium",
+    "https://www.prisma.fi/haku?search=30th+ultra+premium",
 )
 PRODUCT_URL = "https://www.prisma.fi/tuotteet/{sok_id}/{slug}"
 KARKKAINEN_LISTING_URL = (
@@ -43,6 +46,8 @@ KARKKAINEN_SEARCH_URLS = (
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=30th+celebration",
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+30-vuotis",
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=30-vuotisjuhla",
+    "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+ultra+premium",
+    "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+ultra-premium",
 )
 KARKKAINEN_BASE = "https://www.karkkainen.com/verkkokauppa"
 VK_SITE = "https://www.verkkokauppa.com"
@@ -53,6 +58,9 @@ VK_ETB_URL = (
 )
 VK_CATALOG_URL = (
     f"{VK_SITE}/fi/catalog/trading-cards/kerailykortit?query=pokemon+30"
+)
+VK_PREMIUM_SEARCH_URL = (
+    f"{VK_SITE}/fi/catalog/trading-cards/kerailykortit?query=pokemon+ultra+premium"
 )
 VK_PRODUCT_API = "https://web-api.service.verkkokauppa.com/product/{pid}"
 VK_AVAIL_API = "https://product.service.verkkokauppa.com/fi/api/v1/availability"
@@ -119,7 +127,10 @@ PRISMA_WATCH_PRODUCTS = (
         "name": "Pokémon Tin ex 30th (2)",
     },
 )
-PRISMA_FAST_SEARCH_URL = "https://www.prisma.fi/haku?search=pokemon+30th"
+PRISMA_FAST_SEARCH_URLS = (
+    "https://www.prisma.fi/haku?search=pokemon+30th",
+    "https://www.prisma.fi/haku?search=pokemon+ultra+premium",
+)
 MAX_PAGES = 8
 REQUEST_PAUSE_SECONDS = 1.5
 FAST_CHECK_SECONDS_DEFAULT = 15
@@ -164,6 +175,7 @@ IGNORED_BOOSTER_RE = re.compile(
     re.IGNORECASE,
 )
 BOOSTER_NAME_RE = re.compile(r"booster", re.IGNORECASE)
+ULTRA_PREMIUM_RE = re.compile(r"ultra[\s-]*premium|\bupc\b", re.IGNORECASE)
 POKEMON_RE = re.compile(r"pok[eé]mon|\btcg\b", re.IGNORECASE)
 TCG_RE = re.compile(
     r"booster|elite trainer|\betb\b|collection|mini tin|\btin\b|blister|binder|upc",
@@ -340,6 +352,18 @@ def is_booster_product(name: str) -> bool:
     )
 
 
+def is_ultra_premium_product(name: str) -> bool:
+    return bool(ULTRA_PREMIUM_RE.search(name)) and bool(POKEMON_RE.search(name))
+
+
+def is_watched_drop(name: str, product_id: str = "") -> bool:
+    if is_ignored_booster(name, product_id) or is_ignored_marketing(name):
+        return False
+    if not (is_booster_product(name) or is_ultra_premium_product(name)):
+        return False
+    return is_anniversary_product(name, require_pokemon=True)
+
+
 def is_anniversary_product(name: str, brand: str = "", require_pokemon: bool = False) -> bool:
     if is_ignored_marketing(name) or is_ignored_booster(name):
         return False
@@ -359,9 +383,7 @@ def should_watch_product(
         return False
     if is_anniversary_product(name, brand, require_pokemon=require_pokemon):
         return True
-    if allow_booster and is_booster_product(name) and is_anniversary_product(
-        name, brand, require_pokemon=True
-    ):
+    if allow_booster and is_watched_drop(name, product_id):
         return True
     return False
 
@@ -696,20 +718,20 @@ def fetch_verkkokauppa_etb() -> dict[str, Any]:
     return product
 
 
-def fetch_verkkokauppa_catalog() -> tuple[list[dict[str, Any]], int]:
+def fetch_verkkokauppa_search(query_text: str, referer: str = VK_CATALOG_URL) -> tuple[list[dict[str, Any]], int]:
     query = urllib.parse.urlencode(
         {
             "filter[base+category][]": "trading_cards",
             "page[number]": "1",
             "page[size]": "48",
             "sort": "-score",
-            "filter[q]": "pokemon 30",
+            "filter[q]": query_text,
             "sessionId": str(uuid.uuid4()),
             "private": "true",
             "include": "campaigns,category,salesCategories.parent,brand,facets",
         }
     )
-    payload = fetch_json(f"{VK_SEARCH_API}?{query}", referer=VK_CATALOG_URL)
+    payload = fetch_json(f"{VK_SEARCH_API}?{query}", referer=referer)
     items = payload.get("data") or []
     total = int((payload.get("meta") or {}).get("totalResults") or len(items))
     raw_products: list[dict[str, Any]] = []
@@ -728,20 +750,29 @@ def fetch_verkkokauppa_catalog() -> tuple[list[dict[str, Any]], int]:
     return products, total
 
 
+def fetch_verkkokauppa_catalog() -> tuple[list[dict[str, Any]], int]:
+    return fetch_verkkokauppa_search("pokemon 30", VK_CATALOG_URL)
+
+
+def collect_vk_drop_listings(products: list[dict[str, Any]], exclude_ids: set[str]) -> list[dict[str, Any]]:
+    return [
+        product
+        for product in products
+        if product.get("id")
+        and product["id"] not in exclude_ids
+        and is_watched_drop(product["name"], product["id"])
+    ]
+
+
 def fetch_verkkokauppa_watch() -> tuple[dict[str, Any], list[dict[str, Any]], int]:
     etb = fetch_verkkokauppa_etb()
     time.sleep(REQUEST_PAUSE_SECONDS)
     catalog, total = fetch_verkkokauppa_catalog()
-    boosters = [
-        product
-        for product in catalog
-        if product.get("id")
-        and product["id"] != etb["id"]
-        and is_booster_product(product["name"])
-        and is_anniversary_product(product["name"], require_pokemon=True)
-        and not is_ignored_booster(product["name"], product["id"])
-    ]
-    return etb, boosters, total
+    time.sleep(REQUEST_PAUSE_SECONDS)
+    premium, premium_total = fetch_verkkokauppa_search("pokemon ultra premium", VK_PREMIUM_SEARCH_URL)
+    exclude = {etb["id"]}
+    drops = collect_vk_drop_listings(catalog + premium, exclude)
+    return etb, drops, total + premium_total
 
 
 def vk_watch_product(spec: dict[str, str], availability_raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -793,31 +824,28 @@ def fetch_prisma_watch_products() -> list[dict[str, Any]]:
 
 
 def fetch_prisma_fast_search() -> list[dict[str, Any]]:
-    page_props = parse_next_data(fetch_html(PRISMA_FAST_SEARCH_URL))
-    collected: list[dict[str, Any]] = []
-    for product in products_from_page(page_props, "prisma-fast-search"):
-        if product["id"] and should_watch_product(
-            product["name"],
-            product.get("brand", ""),
-            require_pokemon=True,
-            product_id=product.get("id") or "",
-        ):
-            collected.append(product)
-    return collected
+    collected: dict[str, dict[str, Any]] = {}
+    for url in PRISMA_FAST_SEARCH_URLS:
+        page_props = parse_next_data(fetch_html(url))
+        for product in products_from_page(page_props, "prisma-fast-search"):
+            if product["id"] and should_watch_product(
+                product["name"],
+                product.get("brand", ""),
+                require_pokemon=True,
+                allow_booster=True,
+                product_id=product.get("id") or "",
+            ):
+                collected[product["id"]] = product
+        time.sleep(0.4)
+    return list(collected.values())
 
 
-def collect_fast_vk_boosters() -> list[dict[str, Any]]:
+def collect_fast_vk_drops() -> list[dict[str, Any]]:
     catalog, _total = fetch_verkkokauppa_catalog()
+    time.sleep(0.4)
+    premium, _premium_total = fetch_verkkokauppa_search("pokemon ultra premium", VK_PREMIUM_SEARCH_URL)
     watched = {f"verkkokauppa:{spec['pid']}" for spec in VK_WATCH_PRODUCTS}
-    return [
-        product
-        for product in catalog
-        if product.get("id")
-        and product["id"] not in watched
-        and is_booster_product(product["name"])
-        and is_anniversary_product(product["name"], require_pokemon=True)
-        and not is_ignored_booster(product["name"], product["id"])
-    ]
+    return collect_vk_drop_listings(catalog + premium, watched)
 
 
 def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) -> dict[str, Any]:
@@ -834,7 +862,7 @@ def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) ->
     add(stock)
 
     if include_listings:
-        boosters, booster_errors = collect_store_matches(collect_fast_vk_boosters, "Verkkokauppa-booster")
+        boosters, booster_errors = collect_store_matches(collect_fast_vk_drops, "Verkkokauppa-haku")
         prisma_search, prisma_search_errors = collect_store_matches(fetch_prisma_fast_search, "Prisma-haku")
         prisma_watch, prisma_watch_errors = collect_store_matches(fetch_prisma_watch_products, "Prisma-ostoskori")
         errors.extend(booster_errors)
@@ -1411,6 +1439,28 @@ def self_test() -> int:
         allow_booster=True,
     ):
         print("FAIL: 30th Booster Bundle olisi pitänyt tulla vahtiin")
+        failed = True
+    if is_ultra_premium_product("Pokémon TCG Charizard Super Premium Collection"):
+        print("FAIL: Super Premium ei ole Ultra-Premium")
+        failed = True
+    if not is_ultra_premium_product("Pokémon Mega Charizard Ultra Premium Collection"):
+        print("FAIL: Ultra Premium Collection olisi pitänyt tunnistaa")
+        failed = True
+    if should_watch_product(
+        "Pokémon Mega Charizard Ultra Premium Collection",
+        require_pokemon=True,
+        allow_booster=True,
+    ) or is_watched_drop("Pokémon Mega Charizard Ultra Premium Collection"):
+        print("FAIL: vanha Ultra-Premium ei saisi tulla 30th-vahtiin")
+        failed = True
+    if not is_watched_drop("Pokémon TCG 30th Celebration Ultra-Premium Collection"):
+        print("FAIL: 30th Ultra-Premium olisi pitänyt tulla vahtiin")
+        failed = True
+    if not should_watch_product(
+        "Pokemon 30th Ultra Premium Collection",
+        require_pokemon=True,
+    ):
+        print("FAIL: 30th Ultra Premium search-osumaa ei saisi jättää")
         failed = True
     sample = telegram_product_message(
         "OSTA NYT — 30th Celebration myynnissä",
