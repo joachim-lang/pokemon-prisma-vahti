@@ -123,8 +123,10 @@ PRISMA_FAST_SEARCH_URL = "https://www.prisma.fi/haku?search=pokemon+30th"
 MAX_PAGES = 8
 REQUEST_PAUSE_SECONDS = 1.5
 FAST_CHECK_SECONDS_DEFAULT = 15
-FAST_LISTINGS_SECONDS = 60
-FAST_KARKKAINEN_SECONDS = 120
+FAST_LISTINGS_SECONDS = 90
+FAST_KARKKAINEN_SECONDS = 180
+RATE_LIMIT_STATUSES = frozenset({403, 429, 503})
+MAX_BACKOFF_SECONDS = 180
 
 # Juhlavuosi tai pelkkä luku 30. "30 cm" ja vastaavat mitat poistetaan ennen täsmäystä.
 MATCH_RE = re.compile(
@@ -175,8 +177,17 @@ NEXT_DATA_RE = re.compile(
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/122.0.0.0 Safari/537.36 PokemonAvailabilityWatch/1.0"
+    "Chrome/140.0.0.0 Safari/537.36"
 )
+
+
+class RateLimitError(RuntimeError):
+    def __init__(self, status: int, url: str, retry_after: int | None = None) -> None:
+        self.status = status
+        self.url = url
+        self.retry_after = retry_after
+        extra = f", retry-after {retry_after}s" if retry_after else ""
+        super().__init__(f"HTTP {status} {url}{extra}")
 
 
 def now_iso() -> str:
@@ -216,31 +227,54 @@ def env_int(name: str, default: int) -> int:
 
 
 def fetch_html(url: str) -> str:
-    request = urllib.request.Request(
+    return _http_get(
         url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "fi-FI,fi;q=0.9,en;q=0.8",
-        },
+        accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     )
-    with urllib.request.urlopen(request, timeout=25) as response:
-        return response.read().decode("utf-8", "replace")
 
 
 def fetch_json(url: str, referer: str = VK_SITE + "/") -> Any:
-    request = urllib.request.Request(
+    body = _http_get(
         url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "application/json",
-            "Accept-Language": "fi-FI,fi;q=0.9,en;q=0.8",
-            "Origin": VK_SITE,
-            "Referer": referer,
-        },
+        accept="application/json",
+        extra_headers={"Origin": VK_SITE, "Referer": referer},
     )
-    with urllib.request.urlopen(request, timeout=25) as response:
-        return json.loads(response.read().decode("utf-8", "replace"))
+    return json.loads(body)
+
+
+def retry_after_seconds(error: urllib.error.HTTPError) -> int | None:
+    raw = error.headers.get("Retry-After") if error.headers else None
+    if not raw:
+        return None
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return None
+
+
+def _http_get(url: str, *, accept: str, extra_headers: dict[str, str] | None = None) -> str:
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": accept,
+        "Accept-Language": "fi-FI,fi;q=0.9,en;q=0.8",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+    last_limit: RateLimitError | None = None
+    for attempt in range(3):
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=25) as response:
+                return response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as error:
+            if error.code not in RATE_LIMIT_STATUSES:
+                raise
+            wait = retry_after_seconds(error) or min(10 * (2**attempt), 60)
+            last_limit = RateLimitError(error.code, url, retry_after=wait)
+            log(f"Kauppa hidasti ({error.code}), odotetaan {wait}s")
+            time.sleep(wait)
+    assert last_limit is not None
+    raise last_limit
 
 
 def parse_next_data(html: str) -> dict[str, Any]:
@@ -809,13 +843,6 @@ def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) ->
         add(boosters)
         add(prisma_search)
         add(prisma_watch)
-        enrich_prisma_cart_status(
-            [
-                product
-                for product in matches.values()
-                if product.get("store") == "Prisma" and product.get("source") == "prisma-fast-search"
-            ]
-        )
 
     if include_karkkainen:
         karkkainen, karkkainen_errors = collect_store_matches(fetch_karkkainen_search, "Kärkkäinen-haku")
@@ -842,6 +869,8 @@ def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) ->
 def collect_store_matches(fetcher, label: str) -> tuple[list[dict[str, Any]], list[str]]:
     try:
         return fetcher(), []
+    except RateLimitError:
+        raise
     except Exception as error:  # noqa: BLE001
         message = f"{label}: {error}"
         log(f"VIRHE {message}")
@@ -1246,6 +1275,7 @@ def run_fast(dry_run: bool) -> int:
     first = True
     last_listings = 0.0
     last_karkkainen = 0.0
+    extra_delay = 0
     while True:
         now = time.monotonic()
         include_listings = first or now - last_listings >= FAST_LISTINGS_SECONDS
@@ -1255,12 +1285,19 @@ def run_fast(dry_run: bool) -> int:
                 include_listings=include_listings,
                 include_karkkainen=include_karkkainen,
             )
+        except RateLimitError as error:
+            extra_delay = min(max(error.retry_after or 30, extra_delay * 2 or 30), MAX_BACKOFF_SECONDS)
+            log(f"VIRHE: {error}. Hidastetaan {extra_delay}s")
+            time.sleep(interval + extra_delay)
+            first = False
+            continue
         except Exception as error:  # noqa: BLE001
             handle_error(error, dry_run)
-            time.sleep(interval)
+            time.sleep(interval + extra_delay)
             first = False
             continue
 
+        extra_delay = max(0, extra_delay - interval)
         if include_listings:
             last_listings = now
         if include_karkkainen:
@@ -1295,7 +1332,7 @@ def run_fast(dry_run: bool) -> int:
                 )
 
         first = False
-        time.sleep(interval)
+        time.sleep(interval + extra_delay)
 
 
 def self_test() -> int:
@@ -1397,6 +1434,16 @@ def self_test() -> int:
         {"flags": {"isSoldOut": False}, "stocks": {"shipment": {"isPurchasable": True}}}
     ):
         print("FAIL: sininen Verkkokauppa-ostoskori olisi pitänyt olla ostettavissa")
+        failed = True
+    if "PokemonAvailabilityWatch" in USER_AGENT:
+        print("FAIL: User-Agent ei saa mainostaa bottia")
+        failed = True
+    if "Chrome/" not in USER_AGENT:
+        print("FAIL: User-Agentin pitäisi näyttää tavalliselta Chrome-selaimelta")
+        failed = True
+    limited = RateLimitError(429, "https://example.com", retry_after=20)
+    if limited.status != 429 or limited.retry_after != 20:
+        print("FAIL: RateLimitError-kentät väärin")
         failed = True
     if failed:
         return 1
