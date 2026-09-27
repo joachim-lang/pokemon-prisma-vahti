@@ -23,6 +23,7 @@ STATE_PATH = DATA_DIR / "state.json"
 LOG_PATH = DATA_DIR / "scraper.log"
 
 BRAND_URL = "https://www.prisma.fi/tuotemerkit/pokemon"
+PRISMA_CARDS_URL = "https://www.prisma.fi/tuotemerkit/pokemon/kategoria/15/elektroniikka"
 SEARCH_URLS = (
     "https://www.prisma.fi/haku?search=30",
     "https://www.prisma.fi/haku?search=pokemon+30",
@@ -446,7 +447,7 @@ def fetch_brand_products() -> tuple[list[dict[str, Any]], int]:
     total = 0
     page = 1
     while page <= MAX_PAGES:
-        url = BRAND_URL if page == 1 else f"{BRAND_URL}?page={page}"
+        url = PRISMA_CARDS_URL if page == 1 else f"{PRISMA_CARDS_URL}?page={page}"
         page_props = parse_next_data(fetch_html(url))
         total = int(page_props.get("productTotalCount") or 0)
         batch = products_from_page(page_props, "brand")
@@ -466,9 +467,9 @@ def fetch_prisma_brand_watch() -> list[dict[str, Any]]:
     collected: dict[str, dict[str, Any]] = {}
     page = 1
     while page <= 3:
-        url = BRAND_URL if page == 1 else f"{BRAND_URL}?page={page}"
+        url = PRISMA_CARDS_URL if page == 1 else f"{PRISMA_CARDS_URL}?page={page}"
         page_props = parse_next_data(fetch_html(url))
-        batch = products_from_page(page_props, "prisma-brand")
+        batch = products_from_page(page_props, "prisma-cards")
         if not batch:
             break
         for product in batch:
@@ -1237,7 +1238,7 @@ def notify_products(title: str, fallback: str, products: list[dict[str, Any]]) -
                 {
                     "type": "mrkdwn",
                     "text": (
-                        f"<{BRAND_URL}|Prisma> · "
+                        f"<{PRISMA_CARDS_URL}|Prisma> · "
                         f"<{KARKKAINEN_CARDS_URL}|Kärkkäinen> · "
                         f"<{VK_CATALOG_URL}|Verkkokauppa>"
                     ),
