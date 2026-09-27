@@ -22,11 +22,11 @@ cat > "$PLIST" <<EOF
   <array>
     <string>${PYTHON}</string>
     <string>${ROOT}/scraper.py</string>
-    <string>--once</string>
+    <string>--fast</string>
   </array>
-  <key>StartInterval</key>
-  <integer>300</integer>
   <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
   <string>${ROOT}/data/launchd.out.log</string>
@@ -40,5 +40,6 @@ launchctl bootout "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl enable "gui/$(id -u)/${LABEL}"
 echo "Asennettu: $PLIST"
-echo "Seuraava tarkistus ajetaan heti ja sen jälkeen 5 min välein."
+echo "Nopea vahti juoksee nyt: Verkkokaupan ostoskori ~15 s välein."
+echo "Macin pitää olla hereillä. GitHub Actions jää 5 min varalle, jos läppäri on kiinni."
 echo "Pysäytys: launchctl bootout gui/\$(id -u)/${LABEL}"

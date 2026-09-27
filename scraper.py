@@ -59,8 +59,72 @@ VK_AVAIL_API = "https://product.service.verkkokauppa.com/fi/api/v1/availability"
 VK_SEARCH_API = "https://search.service.verkkokauppa.com/fi/api/v1/product-search"
 # SV9 Journey Together 36-pack osuu pokemon+30 -hakuun (kuvauksessa "yli 30"), ei 30th.
 VK_IGNORED_PIDS = frozenset({"980153"})
+VK_WATCH_PRODUCTS = (
+    {
+        "pid": "1069670",
+        "name": "Pokémon TCG: 30th Elite Trainer Box keräilykortit",
+        "url": VK_ETB_URL,
+        "price": "80.00 €",
+    },
+    {
+        "pid": "1069688",
+        "name": "Pokémon TCG: 30th 2-Pack Blister Collection keräilykortit",
+        "url": f"{VK_SITE}/fi/product/1069688/Pokemon-TCG-30th-2-Pack-Blister-Collection-kerailykortit",
+    },
+    {
+        "pid": "1069685",
+        "name": "Pokémon TCG: 30th Poster Collection keräilykortit",
+        "url": f"{VK_SITE}/fi/product/1069685/Pokemon-TCG-30th-Poster-Collection-kerailykortit",
+    },
+    {
+        "pid": "1069682",
+        "name": "Pokémon TCG: 30th EX Tin keräilykortit",
+        "url": f"{VK_SITE}/fi/product/1069682/Pokemon-TCG-30th-EX-Tin-kerailykortit",
+    },
+    {
+        "pid": "1069676",
+        "name": "Pokémon TCG: 30th Binder Collection keräilykortit",
+        "url": f"{VK_SITE}/fi/product/1069676/Pokemon-TCG-30th-Binder-Collection-kerailykortit",
+    },
+    {
+        "pid": "1069679",
+        "name": "Pokémon TCG: 30th EX Box keräilykortit",
+        "url": f"{VK_SITE}/fi/product/1069679/Pokemon-TCG-30th-EX-Box-kerailykortit",
+    },
+)
+PRISMA_WATCH_PRODUCTS = (
+    {
+        "id": "111388829",
+        "slug": "pokemon-elite-trainer-box-30th-111388829",
+        "name": "Pokémon Elite Trainer Box 30th",
+    },
+    {
+        "id": "111388831",
+        "slug": "pokemon-box-ex-30th-2-111388831",
+        "name": "Pokémon Box ex 30th (2)",
+    },
+    {
+        "id": "111388834",
+        "slug": "pokemon-2-pack-blister-30th-111388834",
+        "name": "Pokémon 2-Pack Blister 30th",
+    },
+    {
+        "id": "111388849",
+        "slug": "pokemon-poster-coll-30th-111388849",
+        "name": "Pokémon Poster Coll 30th",
+    },
+    {
+        "id": "111388850",
+        "slug": "pokemon-tin-ex-30th-2-111388850",
+        "name": "Pokémon Tin ex 30th (2)",
+    },
+)
+PRISMA_FAST_SEARCH_URL = "https://www.prisma.fi/haku?search=pokemon+30th"
 MAX_PAGES = 8
 REQUEST_PAUSE_SECONDS = 1.5
+FAST_CHECK_SECONDS_DEFAULT = 15
+FAST_LISTINGS_SECONDS = 60
+FAST_KARKKAINEN_SECONDS = 120
 
 # Juhlavuosi tai pelkkä luku 30. "30 cm" ja vastaavat mitat poistetaan ennen täsmäystä.
 MATCH_RE = re.compile(
@@ -139,6 +203,16 @@ def load_env() -> None:
         key = key.strip()
         value = value.strip().strip("'").strip('"')
         os.environ.setdefault(key, value)
+
+
+def env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def fetch_html(url: str) -> str:
@@ -225,7 +299,11 @@ def is_ignored_booster(name: str, product_id: str = "") -> bool:
 
 
 def is_booster_product(name: str) -> bool:
-    return bool(BOOSTER_NAME_RE.search(name)) and not is_ignored_booster(name)
+    return (
+        bool(BOOSTER_NAME_RE.search(name))
+        and bool(POKEMON_RE.search(name))
+        and not is_ignored_booster(name)
+    )
 
 
 def is_anniversary_product(name: str, brand: str = "", require_pokemon: bool = False) -> bool:
@@ -247,7 +325,9 @@ def should_watch_product(
         return False
     if is_anniversary_product(name, brand, require_pokemon=require_pokemon):
         return True
-    if allow_booster and is_booster_product(name) and looks_like_pokemon_product(name, brand):
+    if allow_booster and is_booster_product(name) and is_anniversary_product(
+        name, brand, require_pokemon=True
+    ):
         return True
     return False
 
@@ -337,7 +417,6 @@ def fetch_search_products() -> list[dict[str, Any]]:
                 product["name"],
                 product.get("brand", ""),
                 require_pokemon=True,
-                allow_booster=True,
                 product_id=product.get("id") or "",
             ):
                 collected[product["id"]] = product
@@ -442,7 +521,6 @@ def fetch_karkkainen_search() -> list[dict[str, Any]]:
                 product["name"],
                 product.get("brand", ""),
                 require_pokemon=True,
-                allow_booster=True,
                 product_id=product.get("id") or "",
             ):
                 collected[product["id"]] = product
@@ -626,9 +704,139 @@ def fetch_verkkokauppa_watch() -> tuple[dict[str, Any], list[dict[str, Any]], in
         if product.get("id")
         and product["id"] != etb["id"]
         and is_booster_product(product["name"])
+        and is_anniversary_product(product["name"], require_pokemon=True)
         and not is_ignored_booster(product["name"], product["id"])
     ]
     return etb, boosters, total
+
+
+def vk_watch_product(spec: dict[str, str], availability_raw: dict[str, Any] | None) -> dict[str, Any]:
+    availability = vk_availability_flags(availability_raw)
+    return {
+        "id": f"verkkokauppa:{spec['pid']}",
+        "name": spec["name"],
+        "slug": "",
+        "brand": "Pokemon",
+        "url": spec["url"],
+        "price": spec.get("price"),
+        "image": None,
+        "source": "verkkokauppa-fast",
+        "store": "Verkkokauppa",
+        "availability": availability,
+        "available": availability["ecom"],
+        "notify_listed": False,
+    }
+
+
+def collect_fast_vk_stock() -> list[dict[str, Any]]:
+    pids = [spec["pid"] for spec in VK_WATCH_PRODUCTS]
+    avails = fetch_vk_availabilities(pids)
+    return [vk_watch_product(spec, avails.get(spec["pid"])) for spec in VK_WATCH_PRODUCTS]
+
+
+def fetch_prisma_watch_products() -> list[dict[str, Any]]:
+    products: list[dict[str, Any]] = []
+    for spec in PRISMA_WATCH_PRODUCTS:
+        availability = fetch_prisma_cart_availability(spec["id"], spec["slug"])
+        products.append(
+            {
+                "id": spec["id"],
+                "name": spec["name"],
+                "slug": spec["slug"],
+                "brand": "Pokemon",
+                "url": PRODUCT_URL.format(sok_id=spec["id"], slug=spec["slug"]),
+                "price": None,
+                "image": None,
+                "source": "prisma-fast",
+                "store": "Prisma",
+                "availability": availability,
+                "available": is_purchasable(availability),
+                "notify_listed": False,
+            }
+        )
+        time.sleep(0.35)
+    return products
+
+
+def fetch_prisma_fast_search() -> list[dict[str, Any]]:
+    page_props = parse_next_data(fetch_html(PRISMA_FAST_SEARCH_URL))
+    collected: list[dict[str, Any]] = []
+    for product in products_from_page(page_props, "prisma-fast-search"):
+        if product["id"] and should_watch_product(
+            product["name"],
+            product.get("brand", ""),
+            require_pokemon=True,
+            product_id=product.get("id") or "",
+        ):
+            collected.append(product)
+    return collected
+
+
+def collect_fast_vk_boosters() -> list[dict[str, Any]]:
+    catalog, _total = fetch_verkkokauppa_catalog()
+    watched = {f"verkkokauppa:{spec['pid']}" for spec in VK_WATCH_PRODUCTS}
+    return [
+        product
+        for product in catalog
+        if product.get("id")
+        and product["id"] not in watched
+        and is_booster_product(product["name"])
+        and is_anniversary_product(product["name"], require_pokemon=True)
+        and not is_ignored_booster(product["name"], product["id"])
+    ]
+
+
+def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) -> dict[str, Any]:
+    errors: list[str] = []
+    matches: dict[str, dict[str, Any]] = {}
+
+    def add(products: list[dict[str, Any]]) -> None:
+        for product in products:
+            if product.get("id"):
+                matches[product["id"]] = product
+
+    stock, stock_errors = collect_store_matches(collect_fast_vk_stock, "Verkkokauppa-nopea")
+    errors.extend(stock_errors)
+    add(stock)
+
+    if include_listings:
+        boosters, booster_errors = collect_store_matches(collect_fast_vk_boosters, "Verkkokauppa-booster")
+        prisma_search, prisma_search_errors = collect_store_matches(fetch_prisma_fast_search, "Prisma-haku")
+        prisma_watch, prisma_watch_errors = collect_store_matches(fetch_prisma_watch_products, "Prisma-ostoskori")
+        errors.extend(booster_errors)
+        errors.extend(prisma_search_errors)
+        errors.extend(prisma_watch_errors)
+        add(boosters)
+        add(prisma_search)
+        add(prisma_watch)
+        enrich_prisma_cart_status(
+            [
+                product
+                for product in matches.values()
+                if product.get("store") == "Prisma" and product.get("source") == "prisma-fast-search"
+            ]
+        )
+
+    if include_karkkainen:
+        karkkainen, karkkainen_errors = collect_store_matches(fetch_karkkainen_search, "Kärkkäinen-haku")
+        errors.extend(karkkainen_errors)
+        add(karkkainen)
+
+    add(stock)
+    if errors and not matches:
+        raise RuntimeError(" | ".join(errors))
+
+    return {
+        "checked_at": now_iso(),
+        "brand_product_count": sum(1 for item in matches.values() if item.get("store") == "Prisma"),
+        "brand_total_count": len(PRISMA_WATCH_PRODUCTS),
+        "karkkainen_product_count": sum(1 for item in matches.values() if item.get("store") == "Kärkkäinen"),
+        "karkkainen_total_count": 0,
+        "verkkokauppa_product_count": sum(1 for item in matches.values() if item.get("store") == "Verkkokauppa"),
+        "matches": list(matches.values()),
+        "errors": errors,
+        "fast": True,
+    }
 
 
 def collect_store_matches(fetcher, label: str) -> tuple[list[dict[str, Any]], list[str]]:
@@ -676,13 +884,13 @@ def collect_matches() -> dict[str, Any]:
     if prisma_result:
         (prisma_products, prisma_total), prisma_search = prisma_result
         add_matches(prisma_products)
-        add_matches(prisma_search, require_pokemon=True, allow_booster=True)
+        add_matches(prisma_search, require_pokemon=True)
 
     karkkainen_products, karkkainen_total, karkkainen_search = [], 0, []
     if karkkainen_result:
         (karkkainen_products, karkkainen_total), karkkainen_search = karkkainen_result
         add_matches(karkkainen_products)
-        add_matches(karkkainen_search, require_pokemon=True, allow_booster=True)
+        add_matches(karkkainen_search, require_pokemon=True)
 
     vk_etb, vk_boosters, vk_total = {}, [], 0
     if vk_result:
@@ -814,15 +1022,11 @@ def telegram_product_message(title: str, products: list[dict[str, Any]]) -> str:
         name = html_escape(product["name"])
         price = html_escape(product.get("price") or "hinta ei tiedossa")
         avail = html_escape(availability_label(product["availability"]))
-        lines.append(f'<a href="{product["url"]}">{name}</a>')
         store = html_escape(product.get("store") or "Prisma")
+        lines.append(name)
         lines.append(f"{price} · {avail} · {store}")
+        lines.append(f'<a href="{product["url"]}">Avaa ja osta →</a>')
         lines.append("")
-    lines.append(
-        f'<a href="{BRAND_URL}">Prisma</a> · '
-        f'<a href="{KARKKAINEN_LISTING_URL.format(offset=0)}">Kärkkäinen</a> · '
-        f'<a href="{VK_CATALOG_URL}">Verkkokauppa</a>'
-    )
     return "\n".join(lines).strip()
 
 
@@ -938,20 +1142,27 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
             "would_announce": announce and not state.get("announced"),
         }
 
-    if announce and not state.get("announced"):
-        notify_text(
-            "Pokemon-seuranta käynnissä. Tarkistan Prismaa, Kärkkäistä ja Verkkokauppaa 5 min välein "
-            f"(Prisma {snapshot['brand_product_count']}, "
-            f"Kärkkäinen {snapshot.get('karkkainen_product_count', 0)}, "
-            f"Verkkokauppa {snapshot.get('verkkokauppa_product_count', 0)}, "
-            f"{len(snapshot['matches'])} osumaa)."
-        )
-        state["announced"] = True
+    announce_key = "announced_fast" if snapshot.get("fast") else "announced"
+    if announce and not state.get(announce_key):
+        if snapshot.get("fast"):
+            notify_text(
+                "Nopea Pokemon-vahti käynnissä. Verkkokaupan ostoskori tarkistetaan 15 s välein; "
+                "Prisma ja uudet boosterit noin minuutissa. Napauta Avaa ja osta heti."
+            )
+        else:
+            notify_text(
+                "Pokemon-seuranta käynnissä. Tarkistan Prismaa, Kärkkäistä ja Verkkokauppaa 5 min välein "
+                f"(Prisma {snapshot['brand_product_count']}, "
+                f"Kärkkäinen {snapshot.get('karkkainen_product_count', 0)}, "
+                f"Verkkokauppa {snapshot.get('verkkokauppa_product_count', 0)}, "
+                f"{len(snapshot['matches'])} osumaa)."
+            )
+        state[announce_key] = True
 
     if newly_available:
         notify_products(
-            "Pokémon 30th Celebration on myynnissä!",
-            "Pokémon 30th Celebration -kortit ovat nyt myynnissä.",
+            "OSTA NYT — 30th Celebration myynnissä",
+            "Pokémon 30th Celebration on nyt ostettavissa. Avaa linkki heti.",
             newly_available,
         )
         log(f"Hälytys: {len(newly_available)} tuotetta myynnissä")
@@ -1029,6 +1240,64 @@ def run_once(announce: bool, dry_run: bool) -> int:
     return 0
 
 
+def run_fast(dry_run: bool) -> int:
+    interval = max(8, env_int("FAST_CHECK_SECONDS", FAST_CHECK_SECONDS_DEFAULT))
+    log(f"Nopea vahti käynnissä, ostoskori {interval} s välein")
+    first = True
+    last_listings = 0.0
+    last_karkkainen = 0.0
+    while True:
+        now = time.monotonic()
+        include_listings = first or now - last_listings >= FAST_LISTINGS_SECONDS
+        include_karkkainen = first or now - last_karkkainen >= FAST_KARKKAINEN_SECONDS
+        try:
+            snapshot = collect_fast_matches(
+                include_listings=include_listings,
+                include_karkkainen=include_karkkainen,
+            )
+        except Exception as error:  # noqa: BLE001
+            handle_error(error, dry_run)
+            time.sleep(interval)
+            first = False
+            continue
+
+        if include_listings:
+            last_listings = now
+        if include_karkkainen:
+            last_karkkainen = now
+
+        available = [product for product in snapshot["matches"] if product.get("available")]
+        if first or available or include_listings:
+            log(
+                f"Nopea tarkistus: {len(snapshot['matches'])} seurannassa, "
+                f"{len(available)} ostettavissa"
+                + (f", virheet: {'; '.join(snapshot['errors'])}" if snapshot.get("errors") else "")
+            )
+            for product in available:
+                log(f"  - Myynnissä [{product.get('store')}] {product['name']} {product['url']}")
+
+        if not has_notifier() and not dry_run:
+            log("Ei Slack- tai Telegram-asetuksia — tulokset vain lokiin.")
+            state = load_state()
+            state["last_check"] = snapshot["checked_at"]
+            save_state(state)
+        else:
+            result = diff_and_notify(snapshot, announce=first, dry_run=dry_run)
+            if dry_run:
+                log(
+                    f"Dry-run: uusia listauksia {len(result['newly_listed'])}, "
+                    f"uusia saatavia {len(result['newly_available'])}"
+                )
+            elif result["newly_available"] or result["newly_listed"]:
+                log(
+                    f"Hälytys lähetetty: {len(result['newly_available'])} ostettavissa, "
+                    f"{len(result['newly_listed'])} uutta listausta"
+                )
+
+        first = False
+        time.sleep(interval)
+
+
 def self_test() -> int:
     should_match = [
         "Pokémon TCG 30th Celebration Elite Trainer Box",
@@ -1086,6 +1355,16 @@ def self_test() -> int:
     ):
         print("FAIL: Journey Together Booster ei saisi täsmätä")
         failed = True
+    if is_booster_product("Magic the Gathering Marvel's Spider-Man Play Booster, 30-PACK"):
+        print("FAIL: MTG-booster ei saisi täsmätä")
+        failed = True
+    if should_watch_product(
+        "Pokémon TCG ME05 Pitch Black Booster Bundle",
+        require_pokemon=True,
+        allow_booster=True,
+    ):
+        print("FAIL: ME05-booster ei saisi tulla 30th-vahtiin")
+        failed = True
     if not is_booster_product("Pokémon TCG 30th Celebration Booster Bundle"):
         print("FAIL: 30th Booster Bundle olisi pitänyt täsmätä")
         failed = True
@@ -1095,6 +1374,21 @@ def self_test() -> int:
         allow_booster=True,
     ):
         print("FAIL: 30th Booster Bundle olisi pitänyt tulla vahtiin")
+        failed = True
+    sample = telegram_product_message(
+        "OSTA NYT — 30th Celebration myynnissä",
+        [
+            {
+                "name": "Pokémon TCG: 30th Elite Trainer Box keräilykortit",
+                "url": VK_ETB_URL,
+                "price": "80.00 €",
+                "availability": {"ecom": True, "click_and_collect": False, "store": False},
+                "store": "Verkkokauppa",
+            }
+        ],
+    )
+    if "Avaa ja osta" not in sample or VK_ETB_URL not in sample:
+        print("FAIL: Telegram-viestissä pitää olla suora ostolinkki")
         failed = True
     if vk_is_purchasable({"flags": {"isSoldOut": True}, "stocks": {"shipment": {"isPurchasable": False}}}):
         print("FAIL: harmaa Verkkokauppa-ostoskori ei saa olla ostettavissa")
@@ -1112,8 +1406,9 @@ def self_test() -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prisma, Kärkkäinen ja Verkkokauppa Pokemon 30th Celebration -vahti")
-    parser.add_argument("--once", action="store_true", help="Aja yksi tarkistus ja lopeta (oletus)")
-    parser.add_argument("--watch", action="store_true", help="Tarkista toistuvasti")
+    parser.add_argument("--once", action="store_true", help="Aja yksi hidas tarkistus ja lopeta (oletus)")
+    parser.add_argument("--fast", action="store_true", help="Nopea ostoskorivahti, oletus 15 s")
+    parser.add_argument("--watch", action="store_true", help="Hidas täysi tarkistus toistuvasti")
     parser.add_argument("--interval", type=int, default=0, help="Tarkistusväli minuuteissa (--watch)")
     parser.add_argument("--announce", action="store_true", help="Lähetä käynnistysviesti")
     parser.add_argument("--test-slack", action="store_true", help="Lähetä testiviesti Slackiin")
@@ -1162,7 +1457,9 @@ def main() -> int:
         print("Testiviesti lähetetty Telegramiin.")
         return 0
 
-    interval = args.interval or int(os.environ.get("CHECK_INTERVAL_MINUTES") or 5)
+    interval = args.interval or env_int("CHECK_INTERVAL_MINUTES", 5)
+    if args.fast:
+        return run_fast(dry_run=args.dry_run)
     if args.watch:
         log(f"Aloitetaan seuranta, väli {interval} min")
         while True:
