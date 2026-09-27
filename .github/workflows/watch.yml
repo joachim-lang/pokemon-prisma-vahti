@@ -1,14 +1,18 @@
-name: Prisma 30th vahti
+name: Pokemon 30th vahti
 
 on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
+concurrency:
+  group: pokemon-watch
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
 
@@ -24,12 +28,13 @@ jobs:
           restore-keys: |
             scraper-state-
 
-      - name: Tarkista kaupat
+      - name: Nopea ostoskorivahti
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python scraper.py --once
+          FAST_CHECK_SECONDS: "15"
+        run: python scraper.py --fast --fast-for 270
 
       - name: Tallenna tila
         if: always()

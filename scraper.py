@@ -1203,8 +1203,9 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
     if announce and not state.get(announce_key):
         if snapshot.get("fast"):
             notify_text(
-                "Nopea Pokemon-vahti käynnissä. Verkkokaupan ostoskori tarkistetaan 15 s välein; "
-                "Prisma ja uudet boosterit noin minuutissa. Napauta Avaa ja osta heti."
+                "Pokemon-vahti juoksee GitHubissa. Ostoskori tarkistetaan noin 15 s välein "
+                "jokaisen ajon aikana; Ultra-Premium, boosterit ja Prisma samassa loopissa. "
+                "Läppärin ei tarvitse olla auki."
             )
         else:
             notify_text(
@@ -1297,14 +1298,34 @@ def run_once(announce: bool, dry_run: bool) -> int:
     return 0
 
 
-def run_fast(dry_run: bool) -> int:
+def sleep_for(seconds: float, deadline: float | None) -> bool:
+    if seconds <= 0:
+        return deadline is not None and time.monotonic() >= deadline
+    if deadline is None:
+        time.sleep(seconds)
+        return False
+    left = deadline - time.monotonic()
+    if left <= 0:
+        return True
+    time.sleep(min(seconds, left))
+    return time.monotonic() >= deadline
+
+
+def run_fast(dry_run: bool, duration_seconds: int = 0) -> int:
     interval = max(8, env_int("FAST_CHECK_SECONDS", FAST_CHECK_SECONDS_DEFAULT))
-    log(f"Nopea vahti käynnissä, ostoskori {interval} s välein")
+    deadline = time.monotonic() + duration_seconds if duration_seconds > 0 else None
+    log(
+        f"Nopea vahti käynnissä, ostoskori {interval} s välein"
+        + (f", kesto {duration_seconds}s" if duration_seconds else "")
+    )
     first = True
     last_listings = 0.0
     last_karkkainen = 0.0
     extra_delay = 0
     while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            log("Nopea vahti: aikaraja täynnä, lopetetaan tämä ajo.")
+            return 0
         now = time.monotonic()
         include_listings = first or now - last_listings >= FAST_LISTINGS_SECONDS
         include_karkkainen = first or now - last_karkkainen >= FAST_KARKKAINEN_SECONDS
@@ -1316,12 +1337,14 @@ def run_fast(dry_run: bool) -> int:
         except RateLimitError as error:
             extra_delay = min(max(error.retry_after or 30, extra_delay * 2 or 30), MAX_BACKOFF_SECONDS)
             log(f"VIRHE: {error}. Hidastetaan {extra_delay}s")
-            time.sleep(interval + extra_delay)
+            if sleep_for(interval + extra_delay, deadline):
+                return 0
             first = False
             continue
         except Exception as error:  # noqa: BLE001
             handle_error(error, dry_run)
-            time.sleep(interval + extra_delay)
+            if sleep_for(interval + extra_delay, deadline):
+                return 0
             first = False
             continue
 
@@ -1360,7 +1383,9 @@ def run_fast(dry_run: bool) -> int:
                 )
 
         first = False
-        time.sleep(interval + extra_delay)
+        if sleep_for(interval + extra_delay, deadline):
+            log("Nopea vahti: aikaraja täynnä, lopetetaan tämä ajo.")
+            return 0
 
 
 def self_test() -> int:
@@ -1495,6 +1520,9 @@ def self_test() -> int:
     if limited.status != 429 or limited.retry_after != 20:
         print("FAIL: RateLimitError-kentät väärin")
         failed = True
+    if not sleep_for(0, time.monotonic() - 1):
+        print("FAIL: umpeutuneen aikarajan pitäisi lopettaa heti")
+        failed = True
     if failed:
         return 1
     print("Self-test ok")
@@ -1505,6 +1533,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prisma, Kärkkäinen ja Verkkokauppa Pokemon 30th Celebration -vahti")
     parser.add_argument("--once", action="store_true", help="Aja yksi hidas tarkistus ja lopeta (oletus)")
     parser.add_argument("--fast", action="store_true", help="Nopea ostoskorivahti, oletus 15 s")
+    parser.add_argument(
+        "--fast-for",
+        type=int,
+        default=0,
+        metavar="SEK",
+        help="Nopea vahti N sekuntia (GitHub Actions), sitten lopeta",
+    )
     parser.add_argument("--watch", action="store_true", help="Hidas täysi tarkistus toistuvasti")
     parser.add_argument("--interval", type=int, default=0, help="Tarkistusväli minuuteissa (--watch)")
     parser.add_argument("--announce", action="store_true", help="Lähetä käynnistysviesti")
@@ -1555,8 +1590,8 @@ def main() -> int:
         return 0
 
     interval = args.interval or env_int("CHECK_INTERVAL_MINUTES", 5)
-    if args.fast:
-        return run_fast(dry_run=args.dry_run)
+    if args.fast or args.fast_for:
+        return run_fast(dry_run=args.dry_run, duration_seconds=args.fast_for)
     if args.watch:
         log(f"Aloitetaan seuranta, väli {interval} min")
         while True:
