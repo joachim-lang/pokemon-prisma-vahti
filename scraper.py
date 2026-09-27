@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seuraa Prisman ja Kärkkäisen Pokemon-kortteja ja ilmoittaa 30th Celebration -osumista."""
+"""Seuraa Prismaa, Kärkkäistä ja Verkkokauppaa ja ilmoittaa 30th Celebration -osumista."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,6 +45,20 @@ KARKKAINEN_SEARCH_URLS = (
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=30-vuotisjuhla",
 )
 KARKKAINEN_BASE = "https://www.karkkainen.com/verkkokauppa"
+VK_SITE = "https://www.verkkokauppa.com"
+VK_ETB_PID = "1069670"
+VK_ETB_URL = (
+    f"{VK_SITE}/fi/product/{VK_ETB_PID}/"
+    "Pokemon-TCG-30th-Elite-Trainer-Box-kerailykortit"
+)
+VK_CATALOG_URL = (
+    f"{VK_SITE}/fi/catalog/trading-cards/kerailykortit?query=pokemon+30"
+)
+VK_PRODUCT_API = "https://web-api.service.verkkokauppa.com/product/{pid}"
+VK_AVAIL_API = "https://product.service.verkkokauppa.com/fi/api/v1/availability"
+VK_SEARCH_API = "https://search.service.verkkokauppa.com/fi/api/v1/product-search"
+# SV9 Journey Together 36-pack osuu pokemon+30 -hakuun (kuvauksessa "yli 30"), ei 30th.
+VK_IGNORED_PIDS = frozenset({"980153"})
 MAX_PAGES = 8
 REQUEST_PAUSE_SECONDS = 1.5
 
@@ -77,6 +92,12 @@ IGNORED_MARKETING_RE = re.compile(
     r"30-vuotisjuhlat ovat k[aä]ynniss|tästä juhlavuoden uutuuskortit",
     re.IGNORECASE,
 )
+# Vanhat booster-laatikot, joita pokemon+30 -haku voi nostaa.
+IGNORED_BOOSTER_RE = re.compile(
+    r"journey\s*together|\bsv9\b|scarlet\s*(?:and|&)\s*violet",
+    re.IGNORECASE,
+)
+BOOSTER_NAME_RE = re.compile(r"booster", re.IGNORECASE)
 POKEMON_RE = re.compile(r"pok[eé]mon|\btcg\b", re.IGNORECASE)
 TCG_RE = re.compile(
     r"booster|elite trainer|\betb\b|collection|mini tin|\btin\b|blister|binder|upc",
@@ -133,6 +154,21 @@ def fetch_html(url: str) -> str:
         return response.read().decode("utf-8", "replace")
 
 
+def fetch_json(url: str, referer: str = VK_SITE + "/") -> Any:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Accept-Language": "fi-FI,fi;q=0.9,en;q=0.8",
+            "Origin": VK_SITE,
+            "Referer": referer,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=25) as response:
+        return json.loads(response.read().decode("utf-8", "replace"))
+
+
 def parse_next_data(html: str) -> dict[str, Any]:
     match = NEXT_DATA_RE.search(html)
     if not match:
@@ -183,12 +219,37 @@ def is_ignored_marketing(name: str) -> bool:
     return bool(IGNORED_MARKETING_RE.search(name))
 
 
+def is_ignored_booster(name: str, product_id: str = "") -> bool:
+    pid = product_id.split(":")[-1] if product_id else ""
+    return pid in VK_IGNORED_PIDS or bool(IGNORED_BOOSTER_RE.search(name))
+
+
+def is_booster_product(name: str) -> bool:
+    return bool(BOOSTER_NAME_RE.search(name)) and not is_ignored_booster(name)
+
+
 def is_anniversary_product(name: str, brand: str = "", require_pokemon: bool = False) -> bool:
-    if is_ignored_marketing(name):
+    if is_ignored_marketing(name) or is_ignored_booster(name):
         return False
     if require_pokemon and not looks_like_pokemon_product(name, brand):
         return False
     return bool(MATCH_RE.search(name_for_match(name)))
+
+
+def should_watch_product(
+    name: str,
+    brand: str = "",
+    require_pokemon: bool = False,
+    allow_booster: bool = False,
+    product_id: str = "",
+) -> bool:
+    if is_ignored_booster(name, product_id) or is_ignored_marketing(name):
+        return False
+    if is_anniversary_product(name, brand, require_pokemon=require_pokemon):
+        return True
+    if allow_booster and is_booster_product(name) and looks_like_pokemon_product(name, brand):
+        return True
+    return False
 
 
 def normalize_product(raw: dict[str, Any], ribbons: dict[str, Any], source: str) -> dict[str, Any]:
@@ -272,8 +333,12 @@ def fetch_search_products() -> list[dict[str, Any]]:
     for url in SEARCH_URLS:
         page_props = parse_next_data(fetch_html(url))
         for product in products_from_page(page_props, "search"):
-            if product["id"] and is_anniversary_product(
-                product["name"], product.get("brand", ""), require_pokemon=True
+            if product["id"] and should_watch_product(
+                product["name"],
+                product.get("brand", ""),
+                require_pokemon=True,
+                allow_booster=True,
+                product_id=product.get("id") or "",
             ):
                 collected[product["id"]] = product
         time.sleep(REQUEST_PAUSE_SECONDS)
@@ -373,12 +438,197 @@ def fetch_karkkainen_search() -> list[dict[str, Any]]:
             if not isinstance(raw, dict):
                 continue
             product = normalize_karkkainen_product(raw, "karkkainen-search")
-            if product["id"] and is_anniversary_product(
-                product["name"], product.get("brand", ""), require_pokemon=True
+            if product["id"] and should_watch_product(
+                product["name"],
+                product.get("brand", ""),
+                require_pokemon=True,
+                allow_booster=True,
+                product_id=product.get("id") or "",
             ):
                 collected[product["id"]] = product
         time.sleep(REQUEST_PAUSE_SECONDS)
     return list(collected.values())
+
+
+def localized_text(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("fi", "en", "sv"):
+            if value.get(key):
+                return str(value[key]).strip()
+        for item in value.values():
+            if item:
+                return str(item).strip()
+        return ""
+    return str(value or "").strip()
+
+
+def vk_price(raw: dict[str, Any]) -> str | None:
+    price = raw.get("price")
+    if isinstance(price, dict) and price.get("current") is not None:
+        try:
+            return f"{float(price['current']):.2f} €"
+        except (TypeError, ValueError):
+            pass
+    articles = raw.get("articles") or []
+    if articles and isinstance(articles[0], dict):
+        nested = (articles[0].get("price") or {}) if isinstance(articles[0].get("price"), dict) else {}
+        if nested.get("current") is not None:
+            try:
+                return f"{float(nested['current']):.2f} €"
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def vk_href(raw: dict[str, Any], pid: str) -> str:
+    href = localized_text(raw.get("href"))
+    if not href:
+        articles = raw.get("articles") or []
+        if articles and isinstance(articles[0], dict):
+            href = str(articles[0].get("href") or "").strip()
+    if href.startswith("/"):
+        return VK_SITE + href
+    if href.startswith("http"):
+        return href
+    slug = localized_text(raw.get("slug")) or "tuote"
+    return f"{VK_SITE}/fi/product/{pid}/{slug}" if pid else VK_CATALOG_URL
+
+
+def vk_image(raw: dict[str, Any]) -> str | None:
+    images = raw.get("images") or raw.get("marketingImages") or []
+    if isinstance(images, list) and images:
+        first = images[0]
+        if isinstance(first, str) and first.startswith("http"):
+            return first
+        if isinstance(first, dict):
+            for key in ("orig", "url", "src", "href"):
+                value = first.get(key)
+                if isinstance(value, str) and value.startswith("http"):
+                    return value
+    return None
+
+
+def vk_is_purchasable(availability: dict[str, Any] | None) -> bool:
+    """Harmaa ostoskori = ei voi ostaa; sininen = isPurchasable."""
+    availability = availability or {}
+    flags = availability.get("flags") or {}
+    if flags.get("isSoldOut"):
+        return False
+    stocks = availability.get("stocks") or {}
+    shipment = stocks.get("shipment") or {}
+    if shipment.get("isPurchasable"):
+        return True
+    pickup = stocks.get("pickup") or {}
+    if isinstance(pickup, dict):
+        for location in pickup.values():
+            if isinstance(location, dict) and location.get("isPurchasable"):
+                return True
+    return False
+
+
+def vk_availability_flags(availability: dict[str, Any] | None) -> dict[str, bool]:
+    buyable = vk_is_purchasable(availability)
+    return {"ecom": buyable, "click_and_collect": False, "store": False}
+
+
+def fetch_vk_availabilities(pids: list[str]) -> dict[str, dict[str, Any]]:
+    if not pids:
+        return {}
+    query = urllib.parse.urlencode({"pids": ",".join(pids)})
+    payload = fetch_json(f"{VK_AVAIL_API}?{query}", referer=VK_CATALOG_URL)
+    found: dict[str, dict[str, Any]] = {}
+    for row in payload or []:
+        if isinstance(row, dict) and row.get("pid") is not None:
+            found[str(row["pid"])] = row
+    return found
+
+
+def normalize_vk_product(
+    raw: dict[str, Any],
+    availability_raw: dict[str, Any] | None,
+    source: str,
+    notify_listed: bool,
+) -> dict[str, Any]:
+    pid = str(raw.get("pid") or raw.get("id") or "").strip()
+    name = localized_text(raw.get("name"))
+    brand_raw = raw.get("brand")
+    if isinstance(brand_raw, dict):
+        brand = localized_text(brand_raw.get("name") or brand_raw)
+    else:
+        brand = localized_text(brand_raw)
+    availability = vk_availability_flags(availability_raw)
+    return {
+        "id": f"verkkokauppa:{pid}" if pid else "",
+        "name": name,
+        "slug": localized_text(raw.get("slug")),
+        "brand": brand,
+        "url": vk_href(raw, pid),
+        "price": vk_price(raw),
+        "image": vk_image(raw),
+        "source": source,
+        "store": "Verkkokauppa",
+        "availability": availability,
+        "available": availability["ecom"],
+        "notify_listed": notify_listed,
+    }
+
+
+def fetch_verkkokauppa_etb() -> dict[str, Any]:
+    raw = fetch_json(VK_PRODUCT_API.format(pid=VK_ETB_PID), referer=VK_ETB_URL)
+    if not isinstance(raw, dict):
+        raise RuntimeError("Verkkokaupan ETB-vastaus on odottamattomassa muodossa.")
+    avail = fetch_vk_availabilities([VK_ETB_PID]).get(VK_ETB_PID, {})
+    product = normalize_vk_product(raw, avail, "verkkokauppa-etb", notify_listed=False)
+    if not product["id"]:
+        raise RuntimeError("Verkkokaupan ETB:ltä puuttuu tuote-id.")
+    return product
+
+
+def fetch_verkkokauppa_catalog() -> tuple[list[dict[str, Any]], int]:
+    query = urllib.parse.urlencode(
+        {
+            "filter[base+category][]": "trading_cards",
+            "page[number]": "1",
+            "page[size]": "48",
+            "sort": "-score",
+            "filter[q]": "pokemon 30",
+            "sessionId": str(uuid.uuid4()),
+            "private": "true",
+            "include": "campaigns,category,salesCategories.parent,brand,facets",
+        }
+    )
+    payload = fetch_json(f"{VK_SEARCH_API}?{query}", referer=VK_CATALOG_URL)
+    items = payload.get("data") or []
+    total = int((payload.get("meta") or {}).get("totalResults") or len(items))
+    raw_products: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        attrs = dict(item.get("attributes") or {})
+        attrs["pid"] = str(item.get("id") or attrs.get("pid") or "").strip()
+        if attrs["pid"]:
+            raw_products.append(attrs)
+    avails = fetch_vk_availabilities([item["pid"] for item in raw_products])
+    products = [
+        normalize_vk_product(raw, avails.get(raw["pid"]), "verkkokauppa-catalog", notify_listed=True)
+        for raw in raw_products
+    ]
+    return products, total
+
+
+def fetch_verkkokauppa_watch() -> tuple[dict[str, Any], list[dict[str, Any]], int]:
+    etb = fetch_verkkokauppa_etb()
+    time.sleep(REQUEST_PAUSE_SECONDS)
+    catalog, total = fetch_verkkokauppa_catalog()
+    boosters = [
+        product
+        for product in catalog
+        if product.get("id")
+        and product["id"] != etb["id"]
+        and is_booster_product(product["name"])
+        and not is_ignored_booster(product["name"], product["id"])
+    ]
+    return etb, boosters, total
 
 
 def collect_store_matches(fetcher, label: str) -> tuple[list[dict[str, Any]], list[str]]:
@@ -394,10 +644,18 @@ def collect_matches() -> dict[str, Any]:
     errors: list[str] = []
     matches: dict[str, dict[str, Any]] = {}
 
-    def add_matches(products: list[dict[str, Any]], require_pokemon: bool = False) -> None:
+    def add_matches(
+        products: list[dict[str, Any]],
+        require_pokemon: bool = False,
+        allow_booster: bool = False,
+    ) -> None:
         for product in products:
-            if product.get("id") and is_anniversary_product(
-                product["name"], product.get("brand", ""), require_pokemon=require_pokemon
+            if product.get("id") and should_watch_product(
+                product["name"],
+                product.get("brand", ""),
+                require_pokemon=require_pokemon,
+                allow_booster=allow_booster,
+                product_id=product.get("id") or "",
             ):
                 matches.setdefault(product["id"], product)
 
@@ -409,22 +667,32 @@ def collect_matches() -> dict[str, Any]:
         lambda: (fetch_karkkainen_products(), fetch_karkkainen_search()),
         "Kärkkäinen",
     )
+    vk_result, vk_errors = collect_store_matches(fetch_verkkokauppa_watch, "Verkkokauppa")
     errors.extend(prisma_errors)
     errors.extend(karkkainen_errors)
+    errors.extend(vk_errors)
 
     prisma_products, prisma_total, prisma_search = [], 0, []
     if prisma_result:
         (prisma_products, prisma_total), prisma_search = prisma_result
         add_matches(prisma_products)
-        add_matches(prisma_search, require_pokemon=True)
+        add_matches(prisma_search, require_pokemon=True, allow_booster=True)
 
     karkkainen_products, karkkainen_total, karkkainen_search = [], 0, []
     if karkkainen_result:
         (karkkainen_products, karkkainen_total), karkkainen_search = karkkainen_result
         add_matches(karkkainen_products)
-        add_matches(karkkainen_search, require_pokemon=True)
+        add_matches(karkkainen_search, require_pokemon=True, allow_booster=True)
 
-    if errors and not prisma_products and not karkkainen_products:
+    vk_etb, vk_boosters, vk_total = {}, [], 0
+    if vk_result:
+        vk_etb, vk_boosters, vk_total = vk_result
+        if vk_etb.get("id"):
+            matches.setdefault(vk_etb["id"], vk_etb)
+        for product in vk_boosters:
+            matches.setdefault(product["id"], product)
+
+    if errors and not prisma_products and not karkkainen_products and not vk_etb:
         raise RuntimeError(" | ".join(errors))
 
     enrich_prisma_cart_status([product for product in matches.values() if product.get("store") == "Prisma"])
@@ -435,6 +703,7 @@ def collect_matches() -> dict[str, Any]:
         "brand_total_count": prisma_total,
         "karkkainen_product_count": len(karkkainen_products),
         "karkkainen_total_count": karkkainen_total,
+        "verkkokauppa_product_count": vk_total,
         "matches": list(matches.values()),
         "errors": errors,
     }
@@ -551,7 +820,8 @@ def telegram_product_message(title: str, products: list[dict[str, Any]]) -> str:
         lines.append("")
     lines.append(
         f'<a href="{BRAND_URL}">Prisma</a> · '
-        f'<a href="{KARKKAINEN_LISTING_URL.format(offset=0)}">Kärkkäinen</a>'
+        f'<a href="{KARKKAINEN_LISTING_URL.format(offset=0)}">Kärkkäinen</a> · '
+        f'<a href="{VK_CATALOG_URL}">Verkkokauppa</a>'
     )
     return "\n".join(lines).strip()
 
@@ -586,7 +856,7 @@ def notify_products(title: str, fallback: str, products: list[dict[str, Any]]) -
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"Löytyi *{len(products)}* tuote(tta) Prismasta / Kärkkäiseltä.",
+                "text": f"Löytyi *{len(products)}* tuote(tta) Prismasta / Kärkkäiseltä / Verkkokaupasta.",
             },
         },
     ]
@@ -610,7 +880,8 @@ def notify_products(title: str, fallback: str, products: list[dict[str, Any]]) -
                     "type": "mrkdwn",
                     "text": (
                         f"<{BRAND_URL}|Prisma> · "
-                        f"<{KARKKAINEN_LISTING_URL.format(offset=0)}|Kärkkäinen>"
+                        f"<{KARKKAINEN_LISTING_URL.format(offset=0)}|Kärkkäinen> · "
+                        f"<{VK_CATALOG_URL}|Verkkokauppa>"
                     ),
                 }
             ],
@@ -669,10 +940,11 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
 
     if announce and not state.get("announced"):
         notify_text(
-            "Pokemon-seuranta käynnissä. Tarkistan Prismaa ja Kärkkäistä 5 min välein "
+            "Pokemon-seuranta käynnissä. Tarkistan Prismaa, Kärkkäistä ja Verkkokauppaa 5 min välein "
             f"(Prisma {snapshot['brand_product_count']}, "
             f"Kärkkäinen {snapshot.get('karkkainen_product_count', 0)}, "
-            f"{len(snapshot['matches'])} osumaa 30th Celebrationille)."
+            f"Verkkokauppa {snapshot.get('verkkokauppa_product_count', 0)}, "
+            f"{len(snapshot['matches'])} osumaa)."
         )
         state["announced"] = True
 
@@ -730,7 +1002,8 @@ def run_once(announce: bool, dry_run: bool) -> int:
         f"Tarkistus ok: Prisma {snapshot['brand_product_count']}/{snapshot['brand_total_count']}, "
         f"Kärkkäinen {snapshot.get('karkkainen_product_count', 0)}/"
         f"{snapshot.get('karkkainen_total_count', 0)}, "
-        f"{len(snapshot['matches'])} 30th-osumaa"
+        f"Verkkokauppa {snapshot.get('verkkokauppa_product_count', 0)}, "
+        f"{len(snapshot['matches'])} osumaa"
     )
     for product in snapshot["matches"]:
         log(
@@ -807,6 +1080,30 @@ def self_test() -> int:
         if is_anniversary_product(name, require_pokemon=True):
             print(f"FAIL: hakukohina ei saisi täsmätä: {name}")
             failed = True
+    journey = "Pokemon SV9 Journey Together Booster keräilykortit, 36-pack"
+    if is_booster_product(journey) or should_watch_product(
+        journey, require_pokemon=True, allow_booster=True, product_id="verkkokauppa:980153"
+    ):
+        print("FAIL: Journey Together Booster ei saisi täsmätä")
+        failed = True
+    if not is_booster_product("Pokémon TCG 30th Celebration Booster Bundle"):
+        print("FAIL: 30th Booster Bundle olisi pitänyt täsmätä")
+        failed = True
+    if not should_watch_product(
+        "Pokémon TCG 30th Celebration Booster Bundle",
+        require_pokemon=True,
+        allow_booster=True,
+    ):
+        print("FAIL: 30th Booster Bundle olisi pitänyt tulla vahtiin")
+        failed = True
+    if vk_is_purchasable({"flags": {"isSoldOut": True}, "stocks": {"shipment": {"isPurchasable": False}}}):
+        print("FAIL: harmaa Verkkokauppa-ostoskori ei saa olla ostettavissa")
+        failed = True
+    if not vk_is_purchasable(
+        {"flags": {"isSoldOut": False}, "stocks": {"shipment": {"isPurchasable": True}}}
+    ):
+        print("FAIL: sininen Verkkokauppa-ostoskori olisi pitänyt olla ostettavissa")
+        failed = True
     if failed:
         return 1
     print("Self-test ok")
@@ -814,7 +1111,7 @@ def self_test() -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prisma ja Kärkkäinen Pokemon 30th Celebration -vahti")
+    parser = argparse.ArgumentParser(description="Prisma, Kärkkäinen ja Verkkokauppa Pokemon 30th Celebration -vahti")
     parser.add_argument("--once", action="store_true", help="Aja yksi tarkistus ja lopeta (oletus)")
     parser.add_argument("--watch", action="store_true", help="Tarkista toistuvasti")
     parser.add_argument("--interval", type=int, default=0, help="Tarkistusväli minuuteissa (--watch)")
