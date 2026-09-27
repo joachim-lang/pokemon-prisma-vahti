@@ -38,6 +38,8 @@ SEARCH_URLS = (
     "https://www.prisma.fi/haku?search=30th+ultra+premium",
     "https://www.prisma.fi/haku?search=pokemon+delta+reign",
     "https://www.prisma.fi/haku?search=delta+reign",
+    "https://www.prisma.fi/haku?search=pokemon+umbreon+ultra+premium",
+    "https://www.prisma.fi/haku?search=pokemon+booster+bundle",
 )
 PRODUCT_URL = "https://www.prisma.fi/tuotteet/{sok_id}/{slug}"
 KARKKAINEN_CARDS_URL = "https://www.karkkainen.com/verkkokauppa/kerailykortit"
@@ -54,6 +56,8 @@ KARKKAINEN_SEARCH_URLS = (
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+ultra-premium",
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+delta+reign",
     "https://www.karkkainen.com/verkkokauppa/search?searchTerm=delta+reign",
+    "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+umbreon+ultra+premium",
+    "https://www.karkkainen.com/verkkokauppa/search?searchTerm=pokemon+booster+bundle",
 )
 KARKKAINEN_BASE = "https://www.karkkainen.com/verkkokauppa"
 VK_SITE = "https://www.verkkokauppa.com"
@@ -71,9 +75,17 @@ VK_PREMIUM_SEARCH_URL = (
 VK_DELTA_SEARCH_URL = (
     f"{VK_SITE}/fi/catalog/trading-cards/kerailykortit?query=pokemon+delta+reign"
 )
+VK_BUNDLE_SEARCH_URL = (
+    f"{VK_SITE}/fi/catalog/trading-cards/kerailykortit?query=pokemon+booster+bundle"
+)
+VK_UMBREON_SEARCH_URL = (
+    f"{VK_SITE}/fi/catalog/trading-cards/kerailykortit?query=pokemon+umbreon+ultra+premium"
+)
 VK_EXTRA_SEARCHES = (
     ("pokemon ultra premium", VK_PREMIUM_SEARCH_URL),
     ("pokemon delta reign", VK_DELTA_SEARCH_URL),
+    ("pokemon booster bundle", VK_BUNDLE_SEARCH_URL),
+    ("pokemon umbreon ultra premium", VK_UMBREON_SEARCH_URL),
 )
 VK_PRODUCT_API = "https://web-api.service.verkkokauppa.com/product/{pid}"
 VK_AVAIL_API = "https://product.service.verkkokauppa.com/fi/api/v1/availability"
@@ -87,31 +99,6 @@ VK_WATCH_PRODUCTS = (
         "url": VK_ETB_URL,
         "price": "80.00 €",
     },
-    {
-        "pid": "1069688",
-        "name": "Pokémon TCG: 30th 2-Pack Blister Collection keräilykortit",
-        "url": f"{VK_SITE}/fi/product/1069688/Pokemon-TCG-30th-2-Pack-Blister-Collection-kerailykortit",
-    },
-    {
-        "pid": "1069685",
-        "name": "Pokémon TCG: 30th Poster Collection keräilykortit",
-        "url": f"{VK_SITE}/fi/product/1069685/Pokemon-TCG-30th-Poster-Collection-kerailykortit",
-    },
-    {
-        "pid": "1069682",
-        "name": "Pokémon TCG: 30th EX Tin keräilykortit",
-        "url": f"{VK_SITE}/fi/product/1069682/Pokemon-TCG-30th-EX-Tin-kerailykortit",
-    },
-    {
-        "pid": "1069676",
-        "name": "Pokémon TCG: 30th Binder Collection keräilykortit",
-        "url": f"{VK_SITE}/fi/product/1069676/Pokemon-TCG-30th-Binder-Collection-kerailykortit",
-    },
-    {
-        "pid": "1069679",
-        "name": "Pokémon TCG: 30th EX Box keräilykortit",
-        "url": f"{VK_SITE}/fi/product/1069679/Pokemon-TCG-30th-EX-Box-kerailykortit",
-    },
 )
 PRISMA_WATCH_PRODUCTS = (
     {
@@ -119,31 +106,13 @@ PRISMA_WATCH_PRODUCTS = (
         "slug": "pokemon-elite-trainer-box-30th-111388829",
         "name": "Pokémon Elite Trainer Box 30th",
     },
-    {
-        "id": "111388831",
-        "slug": "pokemon-box-ex-30th-2-111388831",
-        "name": "Pokémon Box ex 30th (2)",
-    },
-    {
-        "id": "111388834",
-        "slug": "pokemon-2-pack-blister-30th-111388834",
-        "name": "Pokémon 2-Pack Blister 30th",
-    },
-    {
-        "id": "111388849",
-        "slug": "pokemon-poster-coll-30th-111388849",
-        "name": "Pokémon Poster Coll 30th",
-    },
-    {
-        "id": "111388850",
-        "slug": "pokemon-tin-ex-30th-2-111388850",
-        "name": "Pokémon Tin ex 30th (2)",
-    },
 )
 PRISMA_FAST_SEARCH_URLS = (
     "https://www.prisma.fi/haku?search=pokemon+30th",
     "https://www.prisma.fi/haku?search=pokemon+ultra+premium",
     "https://www.prisma.fi/haku?search=pokemon+delta+reign",
+    "https://www.prisma.fi/haku?search=pokemon+umbreon+ultra+premium",
+    "https://www.prisma.fi/haku?search=pokemon+booster+bundle",
 )
 MAX_PAGES = 8
 REQUEST_PAUSE_SECONDS = 1.5
@@ -189,8 +158,11 @@ IGNORED_BOOSTER_RE = re.compile(
     re.IGNORECASE,
 )
 BOOSTER_NAME_RE = re.compile(r"booster", re.IGNORECASE)
+BOOSTER_BUNDLE_RE = re.compile(r"booster\s*bundle", re.IGNORECASE)
 ULTRA_PREMIUM_RE = re.compile(r"ultra[\s-]*premium|\bupc\b", re.IGNORECASE)
 DELTA_REIGN_RE = re.compile(r"delta\s*reign", re.IGNORECASE)
+ETB_RE = re.compile(r"elite\s*trainer\s*box|\betb\b", re.IGNORECASE)
+UMBREON_RE = re.compile(r"umbreon", re.IGNORECASE)
 POKEMON_RE = re.compile(r"pok[eé]mon|\btcg\b", re.IGNORECASE)
 TCG_RE = re.compile(
     r"booster|elite trainer|\betb\b|collection|mini tin|\btin\b|blister|binder|upc",
@@ -367,22 +339,45 @@ def is_booster_product(name: str) -> bool:
     )
 
 
+def is_booster_bundle_product(name: str) -> bool:
+    return bool(BOOSTER_BUNDLE_RE.search(name)) and bool(POKEMON_RE.search(name))
+
+
 def is_ultra_premium_product(name: str) -> bool:
     return bool(ULTRA_PREMIUM_RE.search(name)) and bool(POKEMON_RE.search(name))
+
+
+def is_etb_product(name: str) -> bool:
+    return bool(ETB_RE.search(name)) and bool(POKEMON_RE.search(name))
 
 
 def is_delta_reign_product(name: str) -> bool:
     return bool(DELTA_REIGN_RE.search(name)) and bool(POKEMON_RE.search(name))
 
 
-def is_watched_drop(name: str, product_id: str = "") -> bool:
+def is_priority_set(name: str) -> bool:
+    return is_anniversary_product(name, require_pokemon=True) or is_delta_reign_product(name)
+
+
+def is_priority_product(name: str, product_id: str = "") -> bool:
+    """ETB-restock, Ultra-Premium (etenkin Umbreon) ja Booster Bundle."""
     if is_ignored_booster(name, product_id) or is_ignored_marketing(name):
         return False
-    if is_delta_reign_product(name):
-        return True
-    if not (is_booster_product(name) or is_ultra_premium_product(name)):
+    if not looks_like_pokemon_product(name):
         return False
-    return is_anniversary_product(name, require_pokemon=True)
+    if is_etb_product(name) and is_priority_set(name):
+        return True
+    if is_ultra_premium_product(name) and (
+        is_priority_set(name) or bool(UMBREON_RE.search(name))
+    ):
+        return True
+    if is_booster_bundle_product(name) and is_priority_set(name):
+        return True
+    return False
+
+
+def is_watched_drop(name: str, product_id: str = "") -> bool:
+    return is_priority_product(name, product_id)
 
 
 def is_anniversary_product(name: str, brand: str = "", require_pokemon: bool = False) -> bool:
@@ -402,9 +397,7 @@ def should_watch_product(
 ) -> bool:
     if is_ignored_booster(name, product_id) or is_ignored_marketing(name):
         return False
-    if is_delta_reign_product(name):
-        return True
-    if is_anniversary_product(name, brand, require_pokemon=require_pokemon):
+    if is_priority_product(name, product_id):
         return True
     if allow_booster and is_watched_drop(name, product_id):
         return True
@@ -888,10 +881,28 @@ def vk_watch_product(spec: dict[str, str], availability_raw: dict[str, Any] | No
     }
 
 
+def extra_vk_watch_from_state() -> list[dict[str, str]]:
+    extra: list[dict[str, str]] = []
+    seen = {spec["pid"] for spec in VK_WATCH_PRODUCTS}
+    for product_id, record in (load_state().get("products") or {}).items():
+        if not str(product_id).startswith("verkkokauppa:"):
+            continue
+        pid = str(product_id).split(":")[-1]
+        if pid in seen:
+            continue
+        name = str((record or {}).get("name") or "")
+        url = str((record or {}).get("url") or "")
+        if not url or not is_priority_product(name, str(product_id)):
+            continue
+        extra.append({"pid": pid, "name": name, "url": url})
+        seen.add(pid)
+    return extra
+
+
 def collect_fast_vk_stock() -> list[dict[str, Any]]:
-    pids = [spec["pid"] for spec in VK_WATCH_PRODUCTS]
-    avails = fetch_vk_availabilities(pids)
-    return [vk_watch_product(spec, avails.get(spec["pid"])) for spec in VK_WATCH_PRODUCTS]
+    specs = list(VK_WATCH_PRODUCTS) + extra_vk_watch_from_state()
+    avails = fetch_vk_availabilities([spec["pid"] for spec in specs])
+    return [vk_watch_product(spec, avails.get(spec["pid"])) for spec in specs]
 
 
 def fetch_prisma_watch_products() -> list[dict[str, Any]]:
@@ -969,6 +980,16 @@ def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) ->
         add(prisma_search)
         add(prisma_brand)
         add(prisma_watch)
+        enrich_prisma_cart_status(
+            [
+                product
+                for product in matches.values()
+                if product.get("store") == "Prisma"
+                and product.get("slug")
+                and product.get("source") != "prisma-fast"
+                and is_priority_product(product["name"], product.get("id") or "")
+            ]
+        )
 
     if include_karkkainen:
         karkkainen, karkkainen_errors = collect_store_matches(fetch_karkkainen_watch, "Kärkkäinen")
@@ -1584,6 +1605,21 @@ def self_test() -> int:
         require_pokemon=True,
     ):
         print("FAIL: 30th Ultra Premium search-osumaa ei saisi jättää")
+        failed = True
+    if should_watch_product("Pokémon Poster Coll 30th", require_pokemon=True):
+        print("FAIL: 30th-juliste ei ole prioriteetti")
+        failed = True
+    if should_watch_product("Pokémon 30th Anniversary Booster", require_pokemon=True):
+        print("FAIL: pelkkä booster ilman bundlea ei ole prioriteetti")
+        failed = True
+    if not is_priority_product("Pokémon TCG Umbreon Ultra Premium Collection"):
+        print("FAIL: Umbreon Ultra-Premium olisi pitänyt olla prioriteetti")
+        failed = True
+    if not should_watch_product(
+        "Pokemon 30th Celebration Elite Trainer Box",
+        require_pokemon=True,
+    ):
+        print("FAIL: 30th ETB olisi pitänyt jäädä vahtiin")
         failed = True
     if is_delta_reign_product("Pokemon ME05 Pitch Black Booster Bundle"):
         print("FAIL: ME05 ei ole Delta Reign")
