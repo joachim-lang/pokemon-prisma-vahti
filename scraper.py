@@ -877,6 +877,7 @@ def vk_watch_product(spec: dict[str, str], availability_raw: dict[str, Any] | No
         "store": "Verkkokauppa",
         "availability": availability,
         "available": availability["ecom"],
+        "stock_updated_at": str((availability_raw or {}).get("updatedAt") or ""),
         "notify_listed": False,
     }
 
@@ -1475,9 +1476,15 @@ def run_fast(dry_run: bool, duration_seconds: int = 0) -> int:
 
         available = [product for product in snapshot["matches"] if product.get("available")]
         if first or available or include_listings:
+            stock_ages = [
+                f"{product['id'].split(':')[-1]} {product['stock_updated_at']}"
+                for product in snapshot["matches"]
+                if product.get("stock_updated_at")
+            ]
             log(
                 f"Nopea tarkistus: {len(snapshot['matches'])} seurannassa, "
                 f"{len(available)} ostettavissa"
+                + (f" [{'; '.join(stock_ages)}]" if stock_ages else "")
                 + (f", virheet: {'; '.join(snapshot['errors'])}" if snapshot.get("errors") else "")
             )
             for product in available:

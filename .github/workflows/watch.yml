@@ -4,15 +4,21 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Pokemon 30th vahti"]
+    types: [completed]
 
 concurrency:
   group: pokemon-watch
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   check:
+    # GitHubin */5-cron jää usein tunneiksi jäljessä. Älä keskeytä juoksevaa
+    # vahtia, ja ketjuta uusi ajo heti kun edellinen päättyy onnistuneesti.
+    if: github.event_name != 'workflow_run' || contains(fromJSON('["success","failure","timed_out"]'), github.event.workflow_run.conclusion)
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +40,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FAST_CHECK_SECONDS: "15"
-        run: python scraper.py --fast --fast-for 270
+        run: python scraper.py --fast --fast-for 21000
 
       - name: Tallenna tila
         if: always()
