@@ -5,46 +5,11 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
   workflow_run:
-    workflows: ["Pokemon 30th vahti"]
+    workflows: ["Ketjuta Pokemon-vahti"]
     types: [completed]
 
-concurrency:
-  group: pokemon-watch
-  cancel-in-progress: false
-
 jobs:
-  check:
-    # GitHubin */5-cron jää usein tunneiksi jäljessä. Älä keskeytä juoksevaa
-    # vahtia, ja ketjuta uusi ajo heti kun edellinen päättyy onnistuneesti.
+  watch:
     if: github.event_name != 'workflow_run' || contains(fromJSON('["success","failure","timed_out"]'), github.event.workflow_run.conclusion)
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Palauta tila
-        uses: actions/cache/restore@v4
-        with:
-          path: data/state.json
-          key: scraper-state-${{ github.run_number }}
-          restore-keys: |
-            scraper-state-
-
-      - name: Nopea ostoskorivahti
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FAST_CHECK_SECONDS: "15"
-        run: python scraper.py --fast --fast-for 21000
-
-      - name: Tallenna tila
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: data/state.json
-          key: scraper-state-${{ github.run_number }}
+    uses: ./.github/workflows/watch-job.yml
+    secrets: inherit
