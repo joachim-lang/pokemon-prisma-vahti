@@ -116,7 +116,7 @@ PRISMA_FAST_SEARCH_URLS = (
 )
 MAX_PAGES = 8
 REQUEST_PAUSE_SECONDS = 1.5
-FAST_CHECK_SECONDS_DEFAULT = 15
+FAST_CHECK_SECONDS_DEFAULT = 8
 FAST_LISTINGS_SECONDS = 90
 FAST_KARKKAINEN_SECONDS = 180
 RATE_LIMIT_STATUSES = frozenset({403, 429, 503})
@@ -965,22 +965,24 @@ def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) ->
                 matches[product["id"]] = product
 
     stock, stock_errors = collect_store_matches(collect_fast_vk_stock, "Verkkokauppa-nopea")
+    prisma_stock, prisma_stock_errors = collect_store_matches(
+        fetch_prisma_watch_products, "Prisma-ostoskori"
+    )
     errors.extend(stock_errors)
+    errors.extend(prisma_stock_errors)
     add(stock)
+    add(prisma_stock)
 
     if include_listings:
         boosters, booster_errors = collect_store_matches(collect_fast_vk_drops, "Verkkokauppa-haku")
         prisma_search, prisma_search_errors = collect_store_matches(fetch_prisma_fast_search, "Prisma-haku")
         prisma_brand, prisma_brand_errors = collect_store_matches(fetch_prisma_brand_watch, "Prisma-lista")
-        prisma_watch, prisma_watch_errors = collect_store_matches(fetch_prisma_watch_products, "Prisma-ostoskori")
         errors.extend(booster_errors)
         errors.extend(prisma_search_errors)
         errors.extend(prisma_brand_errors)
-        errors.extend(prisma_watch_errors)
         add(boosters)
         add(prisma_search)
         add(prisma_brand)
-        add(prisma_watch)
         enrich_prisma_cart_status(
             [
                 product
@@ -998,6 +1000,7 @@ def collect_fast_matches(*, include_listings: bool, include_karkkainen: bool) ->
         add(karkkainen)
 
     add(stock)
+    add(prisma_stock)
     if errors and not matches:
         raise RuntimeError(" | ".join(errors))
 
@@ -1278,11 +1281,19 @@ def notify_text(text: str) -> None:
     send_to_channels(slack_payload={"text": text}, telegram_text=html_escape(text))
 
 
+def stock_update_missed(previous: dict[str, Any], product: dict[str, Any]) -> bool:
+    """Saldo vaihtui (updatedAt), mutta ostoskori ehti jo harmaaksi."""
+    prev = str(previous.get("stock_updated_at") or "")
+    curr = str(product.get("stock_updated_at") or "")
+    return bool(prev and curr and prev != curr and not product.get("available"))
+
+
 def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> dict[str, Any]:
     state = load_state()
     known = state.setdefault("products", {})
     newly_listed: list[dict[str, Any]] = []
     newly_available: list[dict[str, Any]] = []
+    missed_restocks: list[dict[str, Any]] = []
 
     for product in snapshot["matches"]:
         previous = known.get(product["id"], {})
@@ -1291,6 +1302,7 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
             "url": product["url"],
             "available": product["available"],
             "availability": product["availability"],
+            "stock_updated_at": product.get("stock_updated_at") or previous.get("stock_updated_at"),
             "first_seen": previous.get("first_seen") or snapshot["checked_at"],
             "last_seen": snapshot["checked_at"],
             "alerted_listed": bool(previous.get("alerted_listed")),
@@ -1306,6 +1318,8 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
                 record["alerted_available"] = True
         else:
             record["alerted_available"] = False
+            if stock_update_missed(previous, product):
+                missed_restocks.append(product)
         known[product["id"]] = record
 
     state["last_check"] = snapshot["checked_at"]
@@ -1316,6 +1330,7 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
         return {
             "newly_listed": newly_listed,
             "newly_available": newly_available,
+            "missed_restocks": missed_restocks,
             "would_announce": announce and not state.get("announced"),
         }
 
@@ -1323,9 +1338,8 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
     if announce and not state.get(announce_key):
         if snapshot.get("fast"):
             notify_text(
-                "Pokemon-vahti juoksee GitHubissa. Ostoskori tarkistetaan noin 15 s välein "
-                "jokaisen ajon aikana; Ultra-Premium, boosterit ja Prisma samassa loopissa. "
-                "Läppärin ei tarvitse olla auki."
+                "Pokemon-vahti juoksee. Ostoskori tarkistetaan noin 8 s välein "
+                "niin kauan kuin prosessi on päällä. Läppärin ei tarvitse olla auki."
             )
         else:
             notify_text(
@@ -1360,9 +1374,21 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
                 "Uusia Pokémon 30th Celebration -tuotteita ilmestyi myyntiin.",
                 leftover,
             )
+    if missed_restocks and not newly_available:
+        lines = ["Saldo ehti tulla ja mennä ennen ostoskoria:"]
+        for product in missed_restocks:
+            updated = product.get("stock_updated_at") or "?"
+            lines.append(f"{product['name']} ({updated})")
+            lines.append(product["url"])
+        notify_text("\n".join(lines))
+        log(f"Hälytys: {len(missed_restocks)} restockia meni ohi")
 
     save_state(state)
-    return {"newly_listed": newly_listed, "newly_available": newly_available}
+    return {
+        "newly_listed": newly_listed,
+        "newly_available": newly_available,
+        "missed_restocks": missed_restocks,
+    }
 
 
 def handle_error(error: Exception, dry_run: bool) -> None:
@@ -1502,10 +1528,11 @@ def run_fast(dry_run: bool, duration_seconds: int = 0) -> int:
                     f"Dry-run: uusia listauksia {len(result['newly_listed'])}, "
                     f"uusia saatavia {len(result['newly_available'])}"
                 )
-            elif result["newly_available"] or result["newly_listed"]:
+            elif result["newly_available"] or result["newly_listed"] or result.get("missed_restocks"):
                 log(
                     f"Hälytys lähetetty: {len(result['newly_available'])} ostettavissa, "
-                    f"{len(result['newly_listed'])} uutta listausta"
+                    f"{len(result['newly_listed'])} uutta listausta, "
+                    f"{len(result.get('missed_restocks') or [])} ohi mennyttä"
                 )
 
         first = False
@@ -1668,6 +1695,21 @@ def self_test() -> int:
         failed = True
     if "Chrome/" not in USER_AGENT:
         print("FAIL: User-Agentin pitäisi näyttää tavalliselta Chrome-selaimelta")
+        failed = True
+    if not stock_update_missed(
+        {"stock_updated_at": "2026-09-28T19:27:21+03:00"},
+        {"stock_updated_at": "2026-09-28T20:01:00+03:00", "available": False},
+    ):
+        print("FAIL: saldo-muutos harmaassa korissa olisi pitänyt huomata")
+        failed = True
+    if stock_update_missed(
+        {"stock_updated_at": "2026-09-28T19:27:21+03:00"},
+        {"stock_updated_at": "2026-09-28T20:01:00+03:00", "available": True},
+    ):
+        print("FAIL: ostettavissa oleva restock ei ole 'meni ohi'")
+        failed = True
+    if stock_update_missed({}, {"stock_updated_at": "2026-09-28T19:27:21+03:00", "available": False}):
+        print("FAIL: ensimmäinen updatedAt ei ole missattu restock")
         failed = True
     limited = RateLimitError(429, "https://example.com", retry_after=20)
     if limited.status != 429 or limited.retry_after != 20:

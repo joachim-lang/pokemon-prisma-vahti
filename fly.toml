@@ -1,0 +1,15 @@
+app = "pokemon-vahti"
+primary_region = "arn"
+
+[build]
+
+[env]
+  FAST_CHECK_SECONDS = "8"
+
+[processes]
+  app = "python scraper.py --fast"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
