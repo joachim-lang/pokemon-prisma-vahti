@@ -1,12 +1,10 @@
 name: Ketjuta Pokemon-vahti
 
 on:
-  workflow_run:
-    workflows: ["Pokemon 30th vahti"]
-    types: [completed]
+  workflow_dispatch:
 
 jobs:
   watch:
-    if: contains(fromJSON('["success","failure","timed_out"]'), github.event.workflow_run.conclusion)
+    if: false
     uses: ./.github/workflows/watch-job.yml
     secrets: inherit

@@ -1,17 +1,10 @@
 name: Pokemon 30th vahti
 
+# Fly on ensisijainen vahti. GitHub vain manuaalinen varalla, ilman Telegramia.
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
-  repository_dispatch:
-    types: [watch]
-  workflow_run:
-    workflows: ["Ketjuta Pokemon-vahti"]
-    types: [completed]
 
 jobs:
   watch:
-    if: github.event_name != 'workflow_run' || contains(fromJSON('["success","failure","timed_out"]'), github.event.workflow_run.conclusion)
     uses: ./.github/workflows/watch-job.yml
     secrets: inherit

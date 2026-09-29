@@ -1283,9 +1283,13 @@ def notify_text(text: str) -> None:
 
 def stock_update_missed(previous: dict[str, Any], product: dict[str, Any]) -> bool:
     """Saldo vaihtui (updatedAt), mutta ostoskori ehti jo harmaaksi."""
-    prev = str(previous.get("stock_updated_at") or "")
     curr = str(product.get("stock_updated_at") or "")
-    return bool(prev and curr and prev != curr and not product.get("available"))
+    if not curr or product.get("available"):
+        return False
+    if curr == str(previous.get("alerted_stock_updated_at") or ""):
+        return False
+    prev = str(previous.get("stock_updated_at") or "")
+    return bool(prev and prev != curr)
 
 
 def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> dict[str, Any]:
@@ -1307,6 +1311,7 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
             "last_seen": snapshot["checked_at"],
             "alerted_listed": bool(previous.get("alerted_listed")),
             "alerted_available": bool(previous.get("alerted_available")),
+            "alerted_stock_updated_at": previous.get("alerted_stock_updated_at") or "",
         }
         if not record["alerted_listed"]:
             if product.get("notify_listed", True):
@@ -1320,6 +1325,7 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
             record["alerted_available"] = False
             if stock_update_missed(previous, product):
                 missed_restocks.append(product)
+                record["alerted_stock_updated_at"] = str(product.get("stock_updated_at") or "")
         known[product["id"]] = record
 
     state["last_check"] = snapshot["checked_at"]
@@ -1335,20 +1341,14 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
         }
 
     announce_key = "announced_fast" if snapshot.get("fast") else "announced"
-    if announce and not state.get(announce_key):
-        if snapshot.get("fast"):
-            notify_text(
-                "Pokemon-vahti juoksee. Ostoskori tarkistetaan noin 8 s välein "
-                "niin kauan kuin prosessi on päällä. Läppärin ei tarvitse olla auki."
-            )
-        else:
-            notify_text(
-                "Pokemon-seuranta käynnissä. Tarkistan Prismaa, Kärkkäistä ja Verkkokauppaa 5 min välein "
-                f"(Prisma {snapshot['brand_product_count']}, "
-                f"Kärkkäinen {snapshot.get('karkkainen_product_count', 0)}, "
-                f"Verkkokauppa {snapshot.get('verkkokauppa_product_count', 0)}, "
-                f"{len(snapshot['matches'])} osumaa)."
-            )
+    if announce and not snapshot.get("fast") and not state.get(announce_key):
+        notify_text(
+            "Pokemon-seuranta käynnissä. Tarkistan Prismaa, Kärkkäistä ja Verkkokauppaa 5 min välein "
+            f"(Prisma {snapshot['brand_product_count']}, "
+            f"Kärkkäinen {snapshot.get('karkkainen_product_count', 0)}, "
+            f"Verkkokauppa {snapshot.get('verkkokauppa_product_count', 0)}, "
+            f"{len(snapshot['matches'])} osumaa)."
+        )
         state[announce_key] = True
 
     if newly_available:
@@ -1710,6 +1710,15 @@ def self_test() -> int:
         failed = True
     if stock_update_missed({}, {"stock_updated_at": "2026-09-28T19:27:21+03:00", "available": False}):
         print("FAIL: ensimmäinen updatedAt ei ole missattu restock")
+        failed = True
+    if stock_update_missed(
+        {
+            "stock_updated_at": "2026-09-28T19:27:21+03:00",
+            "alerted_stock_updated_at": "2026-09-28T20:01:00+03:00",
+        },
+        {"stock_updated_at": "2026-09-28T20:01:00+03:00", "available": False},
+    ):
+        print("FAIL: sama saldo-muutos ei saa hälyttää uudestaan")
         failed = True
     limited = RateLimitError(429, "https://example.com", retry_after=20)
     if limited.status != 429 or limited.retry_after != 20:

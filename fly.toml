@@ -9,6 +9,10 @@ primary_region = "arn"
 [processes]
   app = "python scraper.py --fast"
 
+[mounts]
+  source = "vahti_tila"
+  destination = "/app/data"
+
 [[restart]]
   policy = "always"
 
