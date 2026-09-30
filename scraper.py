@@ -1375,13 +1375,11 @@ def diff_and_notify(snapshot: dict[str, Any], announce: bool, dry_run: bool) -> 
                 leftover,
             )
     if missed_restocks and not newly_available:
-        lines = ["Saldo ehti tulla ja mennä ennen ostoskoria:"]
         for product in missed_restocks:
-            updated = product.get("stock_updated_at") or "?"
-            lines.append(f"{product['name']} ({updated})")
-            lines.append(product["url"])
-        notify_text("\n".join(lines))
-        log(f"Hälytys: {len(missed_restocks)} restockia meni ohi")
+            log(
+                f"Saldo vaihtui ilman ostoskoria: {product['name']} "
+                f"({product.get('stock_updated_at') or '?'})"
+            )
 
     save_state(state)
     return {
@@ -1528,11 +1526,10 @@ def run_fast(dry_run: bool, duration_seconds: int = 0) -> int:
                     f"Dry-run: uusia listauksia {len(result['newly_listed'])}, "
                     f"uusia saatavia {len(result['newly_available'])}"
                 )
-            elif result["newly_available"] or result["newly_listed"] or result.get("missed_restocks"):
+            elif result["newly_available"] or result["newly_listed"]:
                 log(
                     f"Hälytys lähetetty: {len(result['newly_available'])} ostettavissa, "
-                    f"{len(result['newly_listed'])} uutta listausta, "
-                    f"{len(result.get('missed_restocks') or [])} ohi mennyttä"
+                    f"{len(result['newly_listed'])} uutta listausta"
                 )
 
         first = False
